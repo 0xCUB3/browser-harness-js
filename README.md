@@ -71,7 +71,7 @@ This repo contains eight skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
-| **cdp** | Drive any Chromium-based browser via CDP — 56 domains, 652 typed methods; consent-based action recording and polished explanatory videos |
+| **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; consent-based action recording and polished explanatory videos |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
