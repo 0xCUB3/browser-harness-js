@@ -91,6 +91,9 @@ This repo contains eight skills installable via `npx skills add`:
 - `skills/cdp/sdk/video-render.ts` / `skills/cdp/sdk/video-template.html` — review renderer and verified MP4 export
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
 - `skills/cdp/sdk/generated.ts` — every CDP method as `session.<Domain>.<method>(params)` (generated)
+- `skills/cdp/sdk/helpers.ts` — agent helpers for exactly the "things CDP structurally lacks" carve-out below: `drainSignals()` / `attachSignals()` (drainable signal queue), `pageInfo()` (modal-dialog detection), `resolveLocator()` / `parseAxLocators()` (locator resolution via the accessibility tree), `help()` (per-helper self-documentation), and the per-site recipe registry `listLearnings()` / `learnings(domain, tool, args)` over `skills/cdp/learnings/<domain>/manifest.json`
+- `skills/cdp/interaction-skills/agent-operating-loop.md` — observe → act → verify → return across the semantic / visual / direct-DOM workflows
+- `skills/cdp/interaction-skills/rich-editors.md` — Docs, Sheets, Notion, Figma: when the DOM is a lie about the editable surface
 - `skills/gsearch/SKILL.md` — Google Search skill instructions
 - `skills/gsearch/scripts/gsearch` — Google Search CLI
 - `skills/gnews/SKILL.md` — Google News skill instructions
@@ -108,6 +111,16 @@ This repo contains eight skills installable via `npx skills add`:
 
 No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the protocol, typed.
 
+## Distribution: cross-agent plugin manifests
+
+Beyond `npx skills add https://github.com/monotykamary/browser-harness-js`, this repo ships manifests so the same skills are discoverable in each agent ecosystem's plugin UI:
+
+- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) — Claude Code plugin marketplace entry (registers `cdp` + the eight recipe skills as one plugin).
+- [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json) — Codex plugin entry with capabilities, default prompts, and brand colors.
+- [`skills/cdp/agents/openai.yaml`](skills/cdp/agents/openai.yaml) — OpenAI-agent display metadata.
+
+Each entry lists the same skills as `./skills/<name>`; the per-skill `scripts/setup` still handles PATH symlinking (`browser-harness-js` CLI + each skill's own script).
+
 ## Why no pre-baked helpers?
 
 Every helper is a lie about what CDP already gives you. `click(x, y)` hides `Input.dispatchMouseEvent` — which has 14 parameters the LLM might need (button, clickCount, modifiers, pointerType, force, tangentialPressure, …). A harness that exposes three of them quietly limits what the agent can do.
@@ -120,6 +133,14 @@ The only "helpers" you'll find are things CDP itself is missing:
 - `listPageTargets()` — filters `chrome://` / `devtools://` out of `Target.getTargets`
 - `resolveWsUrl({wsUrl|port|profileDir})` — reads `DevToolsActivePort` for Chrome 144+
 - `session.use(targetId)` / `session.waitFor(method, pred, timeout)` — the two routing primitives you genuinely need
+- `axView(nodes, opts?)` + `axDiff` / `parseAxRefs` / `axClick` / `axType` — compressed accessibility-tree projection (raw `getFullAXTree` is unusable in context; drops ~96% structural noise and keeps refs you can act on; see `interaction-skills/snapshot.md`)
+- `parseAxLocators` / `resolveLocator` / `axClick(locator)` — stable locators (`role` + `accessibleName`) that survive refMap rebuilds where `[n]` refs do not
+- `attachSignals()` / `drainSignals()` — drainable digest of dialogs / downloads / navigations / crashes (CDP fires dozens of events; this keeps the handful that change what to do next)
+- `pageInfo({ timeoutMs? })` — `url` / `title` / viewport via a timed `Runtime.evaluate`; returns `{ dialog }` when a modal blocks page JS instead of silently hanging
+- `help(name?)` — per-helper usage so the model does not need to reload docs to remember an option name
+- `listLearnings()` / `learnings(domain, tool?, args?)` — recipe registry over `skills/cdp/learnings/` so per-site selector chains are not re-derived each call (see `skills/cdp/learnings/README.md`)
+
+None wrap or hide a `session.Domain.method(...)` call; the agent can always drop to raw CDP for everything these helpers cover.
 
 ## Contributing
 
