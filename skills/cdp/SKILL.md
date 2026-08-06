@@ -9,7 +9,7 @@ description: >-
   calls. Use when the user wants to automate, script, or inspect a
   Chromium-based browser via CDP — single tab or multi-tab, attach to an
   existing browser or launch a new one with --remote-debugging-port.
-setup: bash <skill-dir>/scripts/setup
+setup: bash /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/scripts/setup
 compatibility: >-
   Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser with remote debugging (chrome://inspect or --remote-debugging-port).
 ---
@@ -18,7 +18,7 @@ compatibility: >-
 
 Custom codegen'd CDP SDK (every method from browser_protocol.json + js_protocol.json gets a typed wrapper) plus a tiny HTTP server that holds one persistent CDP `Session`. The `browser-harness-js` CLI auto-starts the server on first use and forwards JS snippets to it.
 
-The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `<skill-dir>` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
+The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` refers to wherever `npx skills add` installed the skill (Claude Code: `~/.claude/skills/cdp`; Cursor: `~/.cursor/skills/cdp`; other agents vary). The CLI should be on PATH as `browser-harness-js`.
 
 ## How to use
 
@@ -107,7 +107,7 @@ await stopRecording()
 return recordingDir
 ```
 
-Recording observes successful raw CDP calls, so it preserves the protocol API instead of replacing it with click/navigation helpers. Use `Input.*` for visible interactions: arbitrary `Runtime.evaluate` expressions such as `element.click()` cannot be classified as action beats. Password text is masked during capture; other typing remains hidden from video compositions unless explicitly reviewed and enabled. Never reenact a completed task to manufacture missing footage. Follow [`make-video.md`](interaction-skills/make-video.md) for consent, edit briefs, full-resolution privacy review, provenance hashes, and verified MP4 export.
+Recording observes successful raw CDP calls, so it preserves the protocol API instead of replacing it with click/navigation helpers. Use `Input.*` for visible interactions: arbitrary `Runtime.evaluate` expressions such as `element.click()` cannot be classified as action beats. Password text is masked during capture; other typing remains hidden from video compositions unless explicitly reviewed and enabled. Never reenact a completed task to manufacture missing footage. Video review and export must run in a fresh detached Chromium profile, never in the user's interactive browser. Follow [`make-video.md`](interaction-skills/make-video.md) for consent, edit briefs, isolated rendering, full-resolution privacy review, provenance hashes, and verified MP4 export.
 
 ### Calling a CDP method
 
@@ -136,8 +136,8 @@ const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, select
 Start here for the patterns every skill shares: [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (navigate + wait for load, the one-tab-per-call shape), [`json-navigation.md`](interaction-skills/json-navigation.md) (read a JSON URL), [`media-capture.md`](interaction-skills/media-capture.md) (record `MediaSource` / hook a native API before navigate), [`make-video.md`](interaction-skills/make-video.md) (turn consented action evidence into a short explanatory video).
 
 ```bash
-ls <skill-dir>/interaction-skills/
-grep -l <keyword> <skill-dir>/interaction-skills/*.md
+ls /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/
+grep -l <keyword> /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/*.md
 ```
 
 Each recipe leads with the shortest CDP call that works, then the trap — in `session.Domain.method(...)` form, no wrapped helpers — so it drops straight into a snippet. If the mechanic you need isn't there, that's a gap worth filing as a new recipe.
@@ -307,10 +307,10 @@ When attaching to the user's already-running browser:
 
 ## Looking up a method
 
-The full typed surface is in `<skill-dir>/sdk/generated.ts` (~655 KB, only loaded if you read it). Each method has its CDP description as a JSDoc comment plus typed `*Params` / `*Return` interfaces in per-domain namespaces.
+The full typed surface is in `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts` (~655 KB, only loaded if you read it). Each method has its CDP description as a JSDoc comment plus typed `*Params` / `*Return` interfaces in per-domain namespaces.
 
 ```bash
-grep -n "navigate" <skill-dir>/sdk/generated.ts | head
+grep -n "navigate" /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/generated.ts | head
 ```
 
 ## Regenerating the SDK
@@ -318,7 +318,7 @@ grep -n "navigate" <skill-dir>/sdk/generated.ts | head
 When the upstream protocol JSONs change, replace `sdk/browser_protocol.json` and/or `sdk/js_protocol.json` and re-run:
 
 ```bash
-cd <skill-dir>/sdk && node gen.ts
+cd /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk && node gen.ts
 browser-harness-js --restart   # pick up the new bindings
 ```
 
@@ -326,9 +326,9 @@ Reinstalling (`npx skills add`) updates the files on disk but not the long-lived
 
 ## Files
 
-All paths are relative to `<skill-dir>` (the install path — see top of this doc).
+All paths are relative to `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp` (the install path — see top of this doc).
 
-- `/usr/local/bin/browser-harness-js` → `<skill-dir>/sdk/browser-harness-js` (the CLI)
+- `/usr/local/bin/browser-harness-js` → `/Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/sdk/browser-harness-js` (the CLI)
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)
