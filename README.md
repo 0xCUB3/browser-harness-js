@@ -67,7 +67,7 @@ Raw screenshots and non-password typed text can contain sensitive content and st
 
 ## Skills
 
-This repo contains eight skills installable via `npx skills add`:
+This repo contains nine skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
@@ -75,6 +75,7 @@ This repo contains eight skills installable via `npx skills add`:
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
+| **rsearch** | Search Reddit posts via CDP — same-origin fetch of reddit's own `/search.json` with the browser's cookies (subreddit/sort/time filters, media URLs), no API key, login optional |
 | **findata** | Free, keyless financial data via CDP — SEC EDGAR statements + Yahoo Finance prices |
 | **ytdl** | Download YouTube videos browser-natively via CDP — records MediaSource output, no `yt-dlp` binary |
 | **ttdl** | Download TikTok videos browser-natively via CDP — records MediaSource output, no watermark, no signer |
@@ -100,6 +101,8 @@ This repo contains eight skills installable via `npx skills add`:
 - `skills/gnews/scripts/gnews` — Google News CLI (a `browser-harness-js` heredoc, no runtime)
 - `skills/xsearch/SKILL.md` — X (Twitter) Search skill instructions
 - `skills/xsearch/scripts/xsearch` — X Search CLI
+- `skills/rsearch/SKILL.md` — Reddit search skill instructions
+- `skills/rsearch/scripts/rsearch` — Reddit search CLI (a `browser-harness-js` heredoc, no runtime; adapted from opencli's reddit adapter)
 - `skills/findata/SKILL.md` — financial-data skill instructions
 - `skills/findata/scripts/findata` — financial-data CLI (SEC EDGAR + Yahoo Finance, a `browser-harness-js` heredoc)
 - `skills/ytdl/SKILL.md` — YouTube download skill instructions
@@ -115,7 +118,7 @@ No helpers file. No `click()`, no `goto()`, no `upload_file()` — just the prot
 
 Beyond `npx skills add https://github.com/monotykamary/browser-harness-js`, this repo ships manifests so the same skills are discoverable in each agent ecosystem's plugin UI:
 
-- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) — Claude Code plugin marketplace entry (registers `cdp` + the eight recipe skills as one plugin).
+- [`.claude-plugin/marketplace.json`](.claude-plugin/marketplace.json) — Claude Code plugin marketplace entry (registers `cdp` + the nine recipe skills as one plugin).
 - [`.codex-plugin/plugin.json`](.codex-plugin/plugin.json) — Codex plugin entry with capabilities, default prompts, and brand colors.
 - [`skills/cdp/agents/openai.yaml`](skills/cdp/agents/openai.yaml) — OpenAI-agent display metadata.
 
