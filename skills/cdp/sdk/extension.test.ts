@@ -853,6 +853,9 @@ test('panel batches streaming renders, exposes stop and jump controls, and backs
   assert.match(html, /id="jump-latest"/);
   assert.match(css, /\.stop-btn \{/);
   assert.match(css, /\.jump-latest \{/);
+  // Both set display explicitly, which would otherwise override the hidden attribute.
+  assert.match(css, /\.stop-btn\[hidden\] \{ display: none; \}/);
+  assert.match(css, /\.jump-latest\[hidden\] \{ display: none; \}/);
   assert.match(composer, /stopEl\.hidden = !busy/);
   assert.match(sidepanel, /#stop'\)\?\.addEventListener\('click', \(\) => stopActiveAsks\(\)\)/);
   assert.match(sidepanel, /event\.key === 'Escape' && activeRequests\(\)\.length/);

@@ -838,7 +838,9 @@ textarea { padding: 8px 9px; resize: none; }
   background: color-mix(in srgb, var(--danger) 10%, transparent);
 }
 .stop-btn:hover { background: color-mix(in srgb, var(--danger) 18%, transparent); }
+.stop-btn[hidden] { display: none; }
 .composer-bar:has(#stop:not([hidden])) .send-split { margin-left: 0; }
+.jump-latest[hidden] { display: none; }
 .jump-latest {
   position: absolute;
   left: 50%;
