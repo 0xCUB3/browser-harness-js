@@ -7,11 +7,12 @@ description: >-
   (`browser-harness-js 'await session.Page.navigate(...)'`) executes against the
   same persistent connection. Session, active target, and globals survive across
   calls. Use when the user wants to automate, script, or inspect a
-  Chromium-based browser via CDP — single tab or multi-tab, attach to an
-  existing browser or launch a new one with --remote-debugging-port.
+  Chromium-based browser via CDP — single tab or multi-tab. Prefers the unpacked
+  Chrome extension relay; falls back to remote debugging (chrome://inspect or
+  --remote-debugging-port).
 setup: bash /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/scripts/setup
 compatibility: >-
-  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser with remote debugging (chrome://inspect or --remote-debugging-port).
+  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser. Preferred: load the unpacked extension at `<skill-dir>/extension`. Fallback: remote debugging (chrome://inspect or --remote-debugging-port).
 ---
 
 # CDP — `browser-harness-js` skill
@@ -22,7 +23,7 @@ The SDK lives in the skill's `sdk/` directory. In the rest of this doc, `/Users/
 
 ## How to use
 
-Just run `browser-harness-js '<JS>'`. The first call spawns the server in the background; subsequent calls hit the same process and so reuse the same `session`, the same WebSocket to the browser, and any globals you set.
+Just run `browser-harness-js '<JS>'`. The first call spawns the server in the background; subsequent calls hit the same process and so reuse the same `session`, the same wire to the browser (extension relay or remote-debugging WebSocket), and any globals you set.
 
 ```bash
 browser-harness-js 'await session.connect()'
@@ -64,7 +65,7 @@ EOF
 |---|---|
 | `browser-harness-js '<js>'`     | Auto-start server if needed, eval the JS, print result. |
 | `browser-harness-js <<EOF…EOF`  | Same, code from stdin. |
-| `browser-harness-js --status`   | Print health JSON (version, uptime, connected, sessionId) or exit 1 if down. |
+| `browser-harness-js --status`   | Print health JSON (version, uptime, connected, transport, extension, sessionId) or exit 1 if down. |
 | `browser-harness-js --version`  | Print the SDK version from the on-disk files (no daemon needed). |
 | `browser-harness-js --start`    | Explicit start (no-op if already running). |
 | `browser-harness-js --stop`     | Graceful shutdown. Drops session state. |
@@ -73,7 +74,7 @@ EOF
 | `browser-harness-js recordings [--latest\|enable\|disable\|replay [dir]]` | Show recording status, persist local consent, or replay an rrweb recording. |
 | `browser-harness-js --no-auto-allow '<js>'` | Set `session.autoAllow = false` on the daemon, then eval the JS. Opts out of auto-dismissing Dia's "Allow debugging connection?" prompt (on by default, macOS). |
 
-Env vars: `CDP_REPL_PORT` (default `9876`), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
+Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876 — keep them in sync), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
 
 ## API surface inside snippets
 
@@ -165,13 +166,17 @@ Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) f
 
 ### Connecting
 
-**Preferred: just call `session.connect()` with no args.** It auto-detects the browser, the port, and the host — no hardcoded port to keep in sync, no guessing which browser. Always try this first:
+**Preferred: just call `session.connect()` with no args.** It uses the unpacked browser-harness-js extension if that worker is connected to the daemon (`ws://127.0.0.1:9876/extension`), otherwise it auto-detects a remote-debugging browser. Always try this first:
 
 ```js
-await session.connect()   // auto-detect: browser + port + host (loopback)
+await session.connect()   // extension first, then remote-debugging auto-detect
+await session.connect({ transport: 'extension' }) // fail if the extension is absent
+await session.connect({ transport: 'cdp' })       // skip the extension
 ```
 
-Auto-detect scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
+`/health` reports `transport: "extension" | "cdp" | null` and `extension: true` when the worker is attached. Pin remote debugging with `{ wsUrl | profileDir | port }`.
+
+Auto-detect (fallback) scans OS-specific browser-data dirs for running Chromium-based browsers (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside, and any other Chromium fork) by looking for a `DevToolsActivePort` file. Each browser picks its own debug port (Chrome often 9222, but Aside uses an ephemeral one like 52860, etc.) — auto-detect reads the actual port from that file instead of assuming 9222. The host is always loopback (`127.0.0.1`) for a locally-running browser. Candidates are ordered by most-recently-launched, and the first one whose WebSocket accepts wins. OS-agnostic — works on macOS, Linux, Windows.
 
 Use `detectBrowsers()` first if you want to see what's available (or let the user pick) before connecting:
 

@@ -5,7 +5,8 @@
  *   POST /eval     body = raw JS to evaluate (NOT JSON-wrapped).
  *                  Top-level await supported. Single expression auto-returns.
  *                  Response: {"ok":true,"result":<json>} | {"ok":false,"error":..,"stack"?:..}
- *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"sessionId":<string|null>}
+ *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"transport":"extension"|"cdp"|null,"extension":<bool>,"sessionId":<string|null>}
+ *   GET  /extension  WebSocket upgrade — MV3 relay (preferred pipe)
  *   POST /quit     graceful shutdown. Returns {"ok":true} then exits.
  *
  * State: `session`, the active sessionId, event subscribers, and any
@@ -14,6 +15,8 @@
  */
 
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
+import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
+import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
 import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
@@ -162,6 +165,8 @@ const server = createServer((req, res) => {
       version: VERSION,
       uptime: Math.floor((Date.now() - startedAt) / 1000),
       connected: session.isConnected(),
+      transport: session.getTransport() ?? null,
+      extension: extensionConnected(),
       sessionId: session.getActiveSession() ?? null,
     }));
     return;
@@ -203,6 +208,18 @@ const server = createServer((req, res) => {
 
   res.writeHead(404, TEXT);
   res.end('not found');
+});
+
+server.on('upgrade', (req, socket, head) => {
+  if (!isExtensionUpgrade(req)) {
+    socket.destroy();
+    return;
+  }
+  acceptExtensionUpgrade(req, socket, head, textSocket => {
+    const wire = asWire(textSocket);
+    setExtensionClient(wire);
+    session.adoptExtension(wire);
+  });
 });
 
 server.listen(PORT, '127.0.0.1', () => {

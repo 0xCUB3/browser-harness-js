@@ -2,11 +2,19 @@
 
 ## Just call `session.connect()`
 
-No args required. It scans OS-specific browser-data dirs for every running Chromium-based browser (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside — and any other Chromium fork via a bounded fallback scan), reads each one's actual debug port from its `DevToolsActivePort` file, and picks the most-recently-launched one whose WebSocket accepts. No hardcoded port: Chrome often listens on 9222, but Aside and others use ephemeral ports (e.g. 52860), so auto-detect reads the real port instead of assuming. The host is always loopback (`127.0.0.1`) for a local browser. Dead ports and permission-denied (403) candidates fall through in <100ms each, so the loop is fast.
+No args required. **Preferred pipe:** the unpacked `skills/cdp/extension` MV3 worker. It dials `ws://127.0.0.1:9876/extension` and relays CDP through `chrome.debugger`. If that socket is already up (or appears within 500ms), `connect()` uses it and never touches remote debugging. The worker hardcodes port 9876; if you set `CDP_REPL_PORT`, change `DEFAULT_PORT` in `extension/sw.js` to match.
+
+**Fallback:** scan OS-specific browser-data dirs for every running Chromium-based browser (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside — and any other Chromium fork via a bounded fallback scan), read each one's actual debug port from its `DevToolsActivePort` file, and pick the most-recently-launched one whose WebSocket accepts. No hardcoded port: Chrome often listens on 9222, but Aside and others use ephemeral ports (e.g. 52860), so auto-detect reads the real port instead of assuming. The host is always loopback (`127.0.0.1`) for a local browser. Dead ports and permission-denied (403) candidates fall through in <100ms each, so the loop is fast.
 
 ```js
-await session.connect()
+await session.connect()                                 // extension, then remote-debugging auto-detect
+await session.connect({ transport: 'extension' })       // extension only — no fallback
+await session.connect({ transport: 'cdp' })             // skip the extension
 ```
+
+`browser-harness-js --status` includes `transport` (`"extension"` | `"cdp"` | `null`) and `extension` (worker attached, even if the session is still on CDP).
+
+The extension emulates browser-level `Target.*` (`createTarget`, `attachToTarget`, `closeTarget`, `getTargets`, `setAutoAttach` / `setDiscoverTargets` as no-op flags plus tab events) and pass-throughs every other domain via `chrome.debugger.sendCommand`. Skills keep the same CDP calls. Limits vs remote debugging: no real `Browser.*` (except a stub `getVersion`), cannot attach to `chrome://` / `devtools://` / other-extension pages, one debugger client per tab (DevTools on that tab blocks attach), and Chrome shows the extension-debugging infobar. Pin `{ transport: 'cdp' }` or `{ profileDir }` when you need the real browser target.
 
 Inspect what's available (e.g. to let the user choose) with `detectBrowsers()`:
 
@@ -21,6 +29,8 @@ Use only when auto-detect picks the wrong browser or you already know the destin
 
 | Form | When |
 |---|---|
+| `{ transport: 'extension' }` | Require the extension; do not fall back to remote debugging. |
+| `{ transport: 'cdp' }` | Skip the extension; remote-debugging auto-detect only. |
 | `{ profileDir }` | Target a specific running browser. Reads its `DevToolsActivePort` directly. OS-agnostic. |
 | `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>`. |
 
@@ -145,7 +155,7 @@ Two tells that the daemon is stale:
    ```bash
    browser-harness-js --version      # on-disk files, e.g. 0.2.0
    browser-harness-js --status       # running daemon's boot version
-   # {"ok":true,"version":"0.2.0","uptime":...,"connected":true,"sessionId":"..."}
+   # {"ok":true,"version":"0.11.0","uptime":...,"connected":true,"transport":"extension","extension":true,"sessionId":"..."}
    ```
 
    If `/health` has **no** `version` field (daemon predates versioning) or a **lower** one than `--version`, the daemon is stale.

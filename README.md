@@ -37,7 +37,9 @@ interesting one.
 
 (The CLI requires [`node`](https://nodejs.org) on PATH — TypeScript type stripping is on by default from Node 23.6. No runtime is auto-installed.)
 
-If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches:
+**Preferred connect path:** load the unpacked extension at `skills/cdp/extension` (`chrome://extensions` → Developer mode → Load unpacked). The worker relays CDP to the daemon over `ws://127.0.0.1:9876/extension` — no `--remote-debugging-port`, no Allow popup. `session.connect()` uses it when present.
+
+**Fallback:** if Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches without the extension:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 
@@ -68,7 +70,7 @@ This repo contains nine skills installable via `npx skills add`:
 
 | Skill | Description |
 |-------|------------|
-| **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; consent-based rrweb session recording |
+| **cdp** | Drive any Chromium-based browser, including Helium, via CDP — 56 domains, 652 typed methods; Chrome extension relay preferred, remote debugging fallback; consent-based rrweb session recording |
 | **gsearch** | Search the web via Google through CDP — structured results in under 1 second; `follow <url>` opens a result link and reads its page text or JSON |
 | **gnews** | Search Google News through CDP (`tbm=nws`) — structured results (title, url, source, time, snippet) with the publisher's direct URL, no redirect wrapper |
 | **xsearch** | Search X (Twitter) via CDP — structured results (requires an active X login) |
@@ -83,7 +85,9 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/cdp/SKILL.md` — day-to-day usage; how to connect, pick a tab, call methods, persist state
 - `skills/cdp/sdk/browser-harness-js` — tiny CLI that auto-spawns the server and forwards snippets
 - `skills/cdp/sdk/repl.ts` — Node HTTP server holding one persistent `Session`
+- `skills/cdp/extension/` — MV3 CDP relay (`chrome.debugger`); preferred `session.connect()` pipe
 - `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events, call observation
+- `skills/cdp/sdk/extension-hub.ts` / `ws-server.ts` — inbound `/extension` WebSocket and connect() preference
 - `skills/cdp/sdk/recording.ts` — consent, pinned rrweb fetch/cache, injection, local replay server
 - `skills/cdp/sdk/rrweb-replay.html` — player UI for `recordings replay`
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers
