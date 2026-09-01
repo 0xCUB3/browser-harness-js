@@ -1,19 +1,19 @@
 {
   "manifest_version": 3,
   "name": "Browser Harness",
-  "version": "0.11.1",
-  "description": "Raw CDP relay and side panel for an already-open Chrome.",
-  "permissions": ["debugger", "tabs", "tabGroups", "sidePanel", "storage", "offscreen", "scripting", "activeTab", "contextMenus"],
+  "version": "0.12.0",
+  "description": "Raw CDP relay and chats for an already-open Chrome.",
+  "permissions": ["debugger", "tabs", "tabGroups", "storage", "offscreen", "scripting", "activeTab", "contextMenus", "sidePanel", "history", "bookmarks", "topSites"],
   "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js",
     "type": "module"
   },
+  "chrome_url_overrides": {
+    "newtab": "ntp-redirect.html"
+  },
   "side_panel": {
     "default_path": "sidepanel.html"
-  },
-  "chrome_url_overrides": {
-    "newtab": "newtab.html"
   },
   "action": {
     "default_title": "Browser Harness",
@@ -28,14 +28,14 @@
         "default": "Alt+Shift+H",
         "mac": "Alt+Shift+H"
       },
-      "description": "Open Browser Harness side panel"
+      "description": "Open Browser Harness"
     },
     "open-chats": {
       "suggested_key": {
         "default": "Alt+Shift+C",
         "mac": "Alt+Shift+C"
       },
-      "description": "Open Browser Harness chats"
+      "description": "Open Browser Harness"
     }
   },
   "icons": {

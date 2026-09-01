@@ -24,7 +24,7 @@ import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
 import { randomUUID } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
-import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { basename, resolve } from 'node:path';
@@ -99,13 +99,14 @@ const PI_SESSION_DIR = resolve(HARNESS_HOME, 'pi-sessions');
 const PI_SESSION_INDEX = resolve(PI_SESSION_DIR, 'browser-harness-sessions.json');
 const HARNESS_SKILLS_DIR = resolve(HARNESS_HOME, 'skills');
 const HARNESS_MEMORY_DIR = resolve(HARNESS_HOME, 'memory');
-type PanelSession = { id: string; name: string; mtime: number };
+type PanelSession = { id: string; name: string; mtime: number; archived?: boolean };
 
 ensureHarnessDirs();
 const panelSessions = loadPanelSessions();
 const livePiRpcs = new Map<string, PiRpc>();
 const workingSets = new Map<string, PluckSet>();
 const inFlightPiPrompts = new Map<string, Promise<string>>();
+refreshPanelSessionNames();
 
 function ensureHarnessDirs(): void {
   mkdirSync(PI_SESSION_DIR, { recursive: true });
@@ -116,7 +117,8 @@ function ensureHarnessDirs(): void {
 }
 
 type HarnessSkill = { name: string; description: string; path: string };
-type TranscriptMessage = { role: 'user' | 'assistant'; text: string };
+type TranscriptTool = { name: string; id?: string; detail?: string };
+type TranscriptMessage = { role: 'user' | 'assistant'; text: string; thinking?: string; tools?: TranscriptTool[] };
 
 function skillFiles(directory = HARNESS_SKILLS_DIR): string[] {
   if (!existsSync(directory)) return [];
@@ -202,18 +204,29 @@ function transcriptForSession(id: string, askDirectory = PI_SESSION_DIR): Transc
       if (!line.trim()) continue;
       const entry = JSON.parse(line) as { type?: unknown; message?: { role?: unknown; content?: unknown } };
       if (entry.type !== 'message' || (entry.message?.role !== 'user' && entry.message?.role !== 'assistant')) continue;
-      const text = Array.isArray(entry.message.content)
-        ? entry.message.content.flatMap(part => part && typeof part === 'object'
-          && (part as Record<string, unknown>).type === 'text'
-          && typeof (part as Record<string, unknown>).text === 'string'
-          ? [(part as Record<string, unknown>).text as string]
-          : []).join('')
+      const parts = Array.isArray(entry.message.content)
+        ? entry.message.content.filter(part => part && typeof part === 'object') as Record<string, unknown>[]
+        : [];
+      const text = parts.length
+        ? parts.flatMap(part => part.type === 'text' && typeof part.text === 'string' ? [part.text] : []).join('')
         : typeof entry.message.content === 'string' ? entry.message.content : '';
-      if (!text) continue;
-      const visibleText = entry.message.role === 'user'
-        ? text.replace(/^[\s\S]*?\n\n## User request\n/, '')
-        : text;
-      if (visibleText) messages.push({ role: entry.message.role, text: visibleText });
+      if (entry.message.role === 'user') {
+        const visibleText = text.replace(/^[\s\S]*?\n\n## User request\n/, '');
+        if (visibleText) messages.push({ role: 'user', text: visibleText });
+        continue;
+      }
+      const thinking = parts.flatMap(part => part.type === 'thinking' && typeof part.thinking === 'string' ? [part.thinking] : []).join('');
+      const tools = parts.flatMap(part => {
+        if (part.type !== 'toolCall' || typeof part.name !== 'string' || !part.name) return [];
+        const tool: TranscriptTool = { name: part.name };
+        if (typeof part.id === 'string' && part.id) tool.id = part.id;
+        return [tool];
+      });
+      if (!text && !thinking && !tools.length) continue;
+      const message: TranscriptMessage = { role: 'assistant', text };
+      if (thinking) message.thinking = thinking;
+      if (tools.length) message.tools = tools;
+      messages.push(message);
     }
     return messages;
   } catch {
@@ -238,6 +251,45 @@ function isSessionId(value: unknown): value is string {
   return typeof value === 'string' && /^[a-zA-Z0-9_-]{1,128}$/.test(value);
 }
 
+function stripSessionTitleMarkdown(value: string): string {
+  return value
+    .replace(/[*_`#]+/g, '')
+    .replace(/["“”‘’]/g, '')
+    .split(/\s+/)
+    .map(word => word.replace(/^'+|'+$/g, ''))
+    .filter(Boolean)
+    .join(' ');
+}
+
+function looksLikeUtterance(title: string): boolean {
+  const normalized = title.replace(/['’]/g, '').toLowerCase();
+  return /^(i|im|ill|id|lets|let|sure|ok|okay|here|hello|ready|there|thanks|got|looking|taking|working|youre|you)\b/.test(normalized);
+}
+
+export function fallbackSessionName(prompt: string): string {
+  const name = stripSessionTitleMarkdown(prompt.trim())
+    .split(/\s+/)
+    .slice(0, 6)
+    .join(' ')
+    .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+  if (!name || looksLikeUtterance(name)) return 'Untitled session';
+  return name;
+}
+
+function recoverPanelSessionName(record: PanelSession): boolean {
+  if (record.name.trim().toLowerCase() !== 'recovered session') return false;
+  const firstUserMessage = transcriptForSession(record.id).find(message => message.role === 'user' && message.text.trim());
+  if (!firstUserMessage) return false;
+  record.name = fallbackSessionName(firstUserMessage.text);
+  return true;
+}
+
+function refreshPanelSessionNames(): void {
+  let changed = false;
+  for (const record of panelSessions.values()) changed = recoverPanelSessionName(record) || changed;
+  if (changed) savePanelSessions();
+}
+
 function createPanelSession(name?: string): PanelSession {
   const id = randomUUID();
   const record = { id, name: name?.trim().slice(0, 80) || 'New session', mtime: Date.now() };
@@ -250,8 +302,12 @@ function createPanelSession(name?: string): PanelSession {
 function ensurePanelSession(id?: unknown): PanelSession {
   if (isSessionId(id)) {
     const existing = panelSessions.get(id);
-    if (existing) return existing;
+    if (existing) {
+      if (recoverPanelSessionName(existing)) savePanelSessions();
+      return existing;
+    }
     const restored = { id, name: 'Recovered session', mtime: Date.now() };
+    recoverPanelSessionName(restored);
     panelSessions.set(id, restored);
     savePanelSessions();
     return restored;
@@ -272,6 +328,72 @@ function renamePanelSession(id: string, name: string): PanelSession | undefined 
   record.name = nextName;
   touchPanelSession(record);
   return record;
+}
+
+function setPanelSessionArchived(id: string, archived: boolean): PanelSession | undefined {
+  const record = panelSessions.get(id);
+  if (!record) return undefined;
+  if (archived) record.archived = true;
+  else delete record.archived;
+  savePanelSessions();
+  return record;
+}
+
+function deletePanelSession(id: string): boolean {
+  if (!panelSessions.delete(id)) return false;
+  savePanelSessions();
+  try { rmSync(askTranscriptPath(id), { force: true }); } catch { /* transcript removal is best effort */ }
+  try {
+    for (const name of readdirSync(PI_SESSION_DIR)) {
+      if (!name.endsWith('.jsonl')) continue;
+      const path = resolve(PI_SESSION_DIR, name);
+      try {
+        const firstLine = readFileSync(path, 'utf8').split('\n', 1)[0];
+        if (firstLine && (JSON.parse(firstLine) as { id?: unknown }).id === id) {
+          rmSync(path, { force: true });
+          break;
+        }
+      } catch { /* skip unreadable session files */ }
+    }
+  } catch { /* transcript removal is best effort */ }
+  return true;
+}
+
+function normalizedSessionTitleCopy(value: string): string {
+  return stripSessionTitleMarkdown(value)
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim();
+}
+
+export function buildSessionTitlePrompt(prompt: string, reply?: string): string {
+  const lines = [
+    'Name this chat. Return only a 3–6 word noun-phrase topic, not an answer.',
+    `User message: ${prompt.trim()}`,
+  ];
+  const replyExcerpt = typeof reply === 'string' ? reply.trim().slice(0, 1200) : '';
+  if (replyExcerpt) lines.push(`Assistant message: ${replyExcerpt}`);
+  return lines.join('\n');
+}
+
+export function sanitizeSessionTitle(answer: string, prompt: string, reply?: string): string | undefined {
+  const firstLine = answer.split(/\r?\n/, 1)[0]!.trim();
+  if (/^title\s*:/i.test(firstLine)) return undefined;
+  const title = stripSessionTitleMarkdown(firstLine);
+  const words = title.split(/\s+/).filter(Boolean);
+  const normalized = normalizedSessionTitleCopy(title);
+  const normalizedPrompt = normalizedSessionTitleCopy(prompt);
+  const placeholders = new Set(['new session', 'recovered session', 'untitled session', 'title', 'new conversation']);
+  if (words.length < 2 || words.length > 6) return undefined;
+  if (/[.!?;:\u2026\/`\\]|[\u2014\u2013]/.test(title)) return undefined;
+  if (looksLikeUtterance(title)) return undefined;
+  if (normalized === normalizedPrompt || placeholders.has(normalized)) return undefined;
+  if (reply) {
+    const normalizedReply = normalizedSessionTitleCopy(reply);
+    if (!normalizedReply) return title.slice(0, 48);
+    if (normalizedReply.startsWith(normalized) || normalizedReply.includes(normalized)) return undefined;
+  }
+  return title.slice(0, 48);
 }
 
 function sessionRpc(id: string): PiRpc {
@@ -355,6 +477,12 @@ type AskPiRpc = {
   prompt(message: string, onEvent: (event: any) => void, images?: PiImage[]): Promise<string>;
 };
 
+type TitlePiRpc = {
+  setModel(model: { provider: string; id: string }): Promise<unknown>;
+  prompt(message: string, onEvent: (event: any) => void): Promise<string>;
+  dispose(): void;
+};
+
 type ReplServerOptions = {
   exitOnQuit?: boolean;
   memoryRoot?: string;
@@ -362,6 +490,7 @@ type ReplServerOptions = {
   scheduleMemory?: (options: MemorySchedule) => Promise<void>;
   runAskImpl?: typeof runAsk;
   piRpcForSession?: (sessionId: string) => AskPiRpc;
+  titleRpcFactory?: (sessionId: string) => TitlePiRpc;
   askTranscriptDirectory?: string;
 };
 
@@ -554,6 +683,7 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
     }
 
     if (req.method === 'GET' && url.pathname === '/sessions') {
+      refreshPanelSessionNames();
       const sessions = [...panelSessions.values()].sort((a, b) => b.mtime - a.mtime);
       res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
       res.end(JSON.stringify({ sessions }));
@@ -578,22 +708,34 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
     const titleSessionMatch = /^\/sessions\/([a-zA-Z0-9_-]+)\/title$/.exec(url.pathname);
     if (req.method === 'POST' && titleSessionMatch) {
       readBody(req).then(async raw => {
-        const body = JSON.parse(raw) as { prompt?: unknown; model?: unknown };
+        const body = JSON.parse(raw) as { prompt?: unknown; reply?: unknown; model?: unknown };
         if (typeof body.prompt !== 'string' || !body.prompt.trim()) throw new Error('Title needs a prompt');
+        if (body.reply !== undefined && typeof body.reply !== 'string') throw new Error('Title reply must be text');
         if (body.model !== undefined && !isModelSelection(body.model)) throw new Error('Model needs provider and id');
         const record = panelSessions.get(titleSessionMatch[1]!);
         if (!record) throw new Error('Session does not exist');
-        const titleRpc = createTitleRpc(`title-${randomUUID()}`);
+        const prompt = body.prompt.trim();
+        const titleRpc = (options.titleRpcFactory ?? createTitleRpc)(`title-${randomUUID()}`);
         try {
           if (body.model) await titleRpc.setModel(body.model);
-          const answer = await titleRpc.prompt(body.prompt.trim(), () => {});
-          const title = answer.trim().split('\n', 1)[0]!.trim().replace(/^["'`]+|["'`]+$/g, '').trim().slice(0, 80);
-          const updated = title ? renamePanelSession(record.id, title) : record;
+          const titlePrompt = buildSessionTitlePrompt(prompt, body.reply);
+          const reply = typeof body.reply === 'string' ? body.reply : '';
+          const answer = await new Promise<string>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error('Title timed out')), 20_000);
+            timer.unref();
+            titleRpc.prompt(titlePrompt, () => {}).then(
+              value => { clearTimeout(timer); resolve(value); },
+              error => { clearTimeout(timer); reject(error); },
+            );
+          });
+          const title = sanitizeSessionTitle(answer, prompt, reply) ?? fallbackSessionName(prompt);
+          const updated = renamePanelSession(record.id, title) ?? record;
           res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
           res.end(JSON.stringify(updated));
         } catch {
+          const updated = renamePanelSession(record.id, fallbackSessionName(prompt)) ?? record;
           res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
-          res.end(JSON.stringify(record));
+          res.end(JSON.stringify(updated));
         } finally {
           titleRpc.dispose();
         }
@@ -607,9 +749,13 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
     const closeSessionMatch = /^\/sessions\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
     if (req.method === 'PATCH' && closeSessionMatch) {
       readBody(req).then(raw => {
-        const body = JSON.parse(raw) as { name?: unknown };
-        if (typeof body.name !== 'string') throw new Error('Session name must be text');
-        const updated = renamePanelSession(closeSessionMatch[1]!, body.name);
+        const body = JSON.parse(raw) as { name?: unknown; archived?: unknown };
+        if (body.name === undefined && body.archived === undefined) throw new Error('Session update needs a name or archived flag');
+        if (body.name !== undefined && typeof body.name !== 'string') throw new Error('Session name must be text');
+        if (body.archived !== undefined && typeof body.archived !== 'boolean') throw new Error('Session archived flag must be boolean');
+        let updated = panelSessions.get(closeSessionMatch[1]!);
+        if (typeof body.name === 'string') updated = renamePanelSession(closeSessionMatch[1]!, body.name);
+        if (typeof body.archived === 'boolean') updated = setPanelSessionArchived(closeSessionMatch[1]!, body.archived);
         if (!updated) throw new Error('Session does not exist');
         res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
         res.end(JSON.stringify(updated));
@@ -625,6 +771,7 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
       livePiRpcs.get(id)?.dispose();
       livePiRpcs.delete(id);
       inFlightPiPrompts.delete(id);
+      deletePanelSession(id);
       res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;

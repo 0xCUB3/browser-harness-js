@@ -13,7 +13,7 @@ chrome.runtime.onStartup.addListener(() => bootstrap());
 bootstrap();
 
 async function bootstrap() {
-  await chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+  chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
   const targets = await chrome.debugger.getTargets().catch(() => []);
   for (const target of targets) {
     if (target.attached && target.tabId != null) attached.add(target.tabId);
@@ -29,36 +29,23 @@ async function bootstrap() {
 }
 
 chrome.action.onClicked.addListener(async tab => {
-  const openingPanel = chrome.sidePanel.open({ windowId: tab.windowId });
+  const opening = openHarness(tab);
   const attaching = tab.id ? attachIfNeeded(tab.id) : Promise.resolve();
-  const [openResult] = await Promise.allSettled([openingPanel, attaching]);
-  if (openResult.status === 'rejected') await reportSidePanelError(openResult.reason);
+  await Promise.allSettled([opening, attaching]);
 });
 
 chrome.commands.onCommand.addListener(async command => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab?.windowId == null) return;
-  if (command === 'open-chats') {
-    await openChatsTab(tab.windowId);
-    return;
+  if (command === 'open-chats' || command === 'open-side-panel') {
+    await openHarness(tab);
   }
-  if (command !== 'open-side-panel') return;
-  const openingPanel = chrome.sidePanel.open({ windowId: tab.windowId });
-  const attaching = tab.id ? attachIfNeeded(tab.id) : Promise.resolve();
-  const [openResult] = await Promise.allSettled([openingPanel, attaching]);
-  if (openResult.status === 'rejected') await reportSidePanelError(openResult.reason);
 });
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
-  if (info.menuItemId === 'open-chats') {
-    await openChatsTab(tab?.windowId);
-    return;
+  if (info.menuItemId === 'open-chats' || info.menuItemId === 'open-side-panel') {
+    await openHarness(tab);
   }
-  if (info.menuItemId !== 'open-side-panel' || tab?.windowId == null) return;
-  const openingPanel = chrome.sidePanel.open({ windowId: tab.windowId });
-  const attaching = tab.id ? attachIfNeeded(tab.id) : Promise.resolve();
-  const [openResult] = await Promise.allSettled([openingPanel, attaching]);
-  if (openResult.status === 'rejected') await reportSidePanelError(openResult.reason);
 });
 
 chrome.debugger.onEvent.addListener((source, method, params) => {
@@ -72,8 +59,9 @@ chrome.debugger.onDetach.addListener(source => {
   publishState();
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  handleChatsShortcut(tabId, changeInfo.url || tab.url || '', tab.windowId).catch(() => {});
-  publishState();
+  if (changeInfo.url) handleChatsShortcut(tabId, changeInfo.url, tab.windowId).catch(() => {});
+  // Only title/url/status changes affect what the panel or daemon show; ignore favicon, audio, pinned, etc.
+  if (changeInfo.url || changeInfo.title || changeInfo.status === 'complete') publishState();
 });
 chrome.tabs.onRemoved.addListener(tabId => {
   attached.delete(tabId);
@@ -84,7 +72,7 @@ chrome.tabs.onActivated.addListener(({ tabId }) => {
   else publishState();
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === 'offscreen') {
     if (message.type === 'connected') {
       daemonConnected = true;
@@ -98,11 +86,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     return;
   }
   if (message?.type === 'openChats') {
-    openChatsTab().then(() => sendResponse({ ok: true }));
-    return true;
-  }
-  if (message?.type === 'openSidePanel') {
-    openSidePanelForSender(_sender).then(
+    const windowId = message.windowId ?? sender?.tab?.windowId;
+    openChatsTab(windowId).then(
       () => sendResponse({ ok: true }),
       error => sendResponse({ ok: false, error: error?.message || String(error) }),
     );
@@ -130,16 +115,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-async function openSidePanelForSender(sender) {
-  const windowId = sender?.tab?.windowId;
-  if (windowId == null) throw new Error('Could not find the new tab window.');
-  await chrome.sidePanel.open({ windowId });
-}
-
 function installContextMenus() {
   chrome.contextMenus.removeAll(() => {
-    chrome.contextMenus.create({ id: 'open-side-panel', title: 'Open side panel', contexts: ['action', 'page'] });
-    chrome.contextMenus.create({ id: 'open-chats', title: 'Open chats', contexts: ['action', 'page'] });
+    chrome.contextMenus.create({ id: 'open-chats', title: 'Open Browser Harness', contexts: ['action', 'page'] });
   });
 }
 
@@ -166,19 +144,72 @@ function isChatsShortcut(url, daemonPort) {
   }
 }
 
+function isAppTab(url) {
+  if (typeof url !== 'string') return false;
+  const app = chrome.runtime.getURL('sidepanel.html');
+  return url === app || url.startsWith(`${app}?`) || url.startsWith(`${app}#`);
+}
+
+function isNewTabPage(url) {
+  if (typeof url !== 'string') return false;
+  if (/^chrome:\/\/newtab\/?(?:[?#].*)?$/.test(url)) return true;
+  const newTabUrls = [
+    chrome.runtime.getURL('ntp-redirect.html'),
+    chrome.runtime.getURL('newtab.html'),
+  ];
+  return newTabUrls.some(base => url === base || url.startsWith(`${base}?`) || url.startsWith(`${base}#`));
+}
+
+function isHarnessSurface(url) {
+  return isAppTab(url) || isNewTabPage(url);
+}
+
+async function openSidePanel(tab) {
+  try {
+    if (!chrome.sidePanel?.open) return openChatsTab(tab?.windowId);
+    if (tab?.id != null) {
+      await chrome.sidePanel.open({ tabId: tab.id });
+      return;
+    }
+    if (tab?.windowId != null) await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch {
+    return openChatsTab(tab?.windowId);
+  }
+}
+
+async function openHarness(tab) {
+  if (isHarnessSurface(tab?.url)) return openChatsTab(tab?.windowId);
+  return openSidePanel(tab);
+}
+
 async function openChatsTab(windowId, shortcutTabId) {
-  const baseUrl = chrome.runtime.getURL('sidepanel.html?layout=full');
+  const baseUrl = chrome.runtime.getURL('sidepanel.html');
   const tabs = await chrome.tabs.query(windowId == null ? {} : { windowId });
-  const existing = tabs.find(tab => tab.url?.startsWith(baseUrl));
+  const sourceTab = shortcutTabId == null
+    ? tabs.find(tab => tab.active)
+    : tabs.find(tab => tab.id === shortcutTabId);
+  const leavingNewTab = sourceTab?.id != null && isNewTabPage(sourceTab.url);
+  const existing = tabs.find(tab => isAppTab(tab.url || ''));
   if (existing?.id != null) {
     await detach(existing.id);
     await chrome.tabs.update(existing.id, { active: true });
     if (existing.windowId != null) await chrome.windows.update(existing.windowId, { focused: true });
-    if (shortcutTabId != null && shortcutTabId !== existing.id) {
-      await detach(shortcutTabId);
-      await chrome.tabs.remove(shortcutTabId);
+    if (sourceTab?.id != null && sourceTab.id !== existing.id && (shortcutTabId != null || leavingNewTab)) {
+      await detach(sourceTab.id);
+      await chrome.tabs.remove(sourceTab.id);
     }
     return existing;
+  }
+  if (leavingNewTab) {
+    const created = await chrome.tabs.create({
+      url: baseUrl,
+      active: true,
+      index: sourceTab.index,
+      ...(sourceTab.windowId == null ? {} : { windowId: sourceTab.windowId }),
+    });
+    await detach(sourceTab.id);
+    await chrome.tabs.remove(sourceTab.id);
+    return created;
   }
   if (shortcutTabId != null) {
     await detach(shortcutTabId);
@@ -369,19 +400,26 @@ function tabInfo(tab) {
   };
 }
 
-async function publishState() {
-  const state = await getState();
-  chrome.runtime.sendMessage({ type: 'state', state }).catch(() => {});
-  if (daemonConnected) sendOffscreen({ type: 'state', ...state });
+let publishTimer = 0;
+let lastPublished = '';
+
+// Coalesce bursts (a page load fires several onUpdated events) into one query
+// per tick and skip sends when nothing observable changed.
+function publishState() {
+  if (publishTimer) return;
+  publishTimer = setTimeout(async () => {
+    publishTimer = 0;
+    const state = await getState();
+    const serialized = JSON.stringify(state);
+    if (serialized === lastPublished) return;
+    lastPublished = serialized;
+    chrome.runtime.sendMessage({ type: 'state', state }).catch(() => {});
+    if (daemonConnected) sendOffscreen({ type: 'state', ...state });
+  }, 40);
 }
 
 function sendOffscreen(payload) {
   chrome.runtime.sendMessage({ destination: 'offscreen', type: 'send', payload }).catch(() => {});
-}
-
-async function reportSidePanelError(error) {
-  lastError = `Could not open side panel: ${error.message || error}`;
-  await publishState();
 }
 
 function updateIcon(tabId, isAttached) {

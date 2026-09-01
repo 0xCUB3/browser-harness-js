@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdirSync, readdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -170,7 +170,7 @@ export function buildTitleSpawn(
       '--no-extensions',
       '--no-context-files',
       '--no-prompt-templates',
-      '--append-system-prompt', resolve(sdkDir, 'pi-title-prompt.md'),
+      '--system-prompt', readFileSync(resolve(sdkDir, 'pi-title-prompt.md'), 'utf8'),
     ],
     env: isolatedPiEnv(port, parentEnv),
   };

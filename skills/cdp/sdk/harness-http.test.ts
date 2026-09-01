@@ -5,11 +5,81 @@ import { homedir, tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import { randomUUID } from 'node:crypto';
-import { createReplServer } from './repl.ts';
+import { buildSessionTitlePrompt, createReplServer, fallbackSessionName, sanitizeSessionTitle } from './repl.ts';
 import { seedDefaultSkills } from './default-skills.ts';
 
 const extensionDirectory = new URL('../../../extension/', import.meta.url);
 const defaultSkillsDirectory = new URL('./default-skills/', import.meta.url);
+
+test('session title input includes both sides and output is sanitized', () => {
+  const rawPrompt = '**How do I upload another TestFlight build?**';
+  const titleInput = buildSessionTitlePrompt(rawPrompt, 'Increment the build number, archive and upload it.');
+  assert.equal(titleInput, [
+    'Name this chat. Return only a 3–6 word noun-phrase topic, not an answer.',
+    `User message: ${rawPrompt}`,
+    'Assistant message: Increment the build number, archive and upload it.',
+  ].join('\n'));
+  assert.equal(sanitizeSessionTitle('TestFlight next-build workflow', rawPrompt), 'TestFlight next-build workflow');
+  assert.equal(sanitizeSessionTitle('“Session naming fixes”\nExtra explanation', 'Fix session naming please'), 'Session naming fixes');
+  assert.equal(sanitizeSessionTitle('New session', 'Describe the bug'), undefined);
+  assert.equal(sanitizeSessionTitle('Recovered session.', 'Describe the bug'), undefined);
+  assert.equal(sanitizeSessionTitle('Title: Session naming fixes', 'Describe the bug'), undefined);
+  assert.equal(sanitizeSessionTitle('Repeat this prompt', '**Repeat this prompt.**'), undefined);
+  assert.equal(sanitizeSessionTitle('one', 'Describe the bug'), undefined);
+  assert.equal(sanitizeSessionTitle('one two three four five six seven eight nine', 'Describe the bug'), undefined);
+  assert.equal(sanitizeSessionTitle('**Session naming fixes**', 'Describe the bug'), 'Session naming fixes');
+  assert.equal(sanitizeSessionTitle('There isn’t a single “best” Mac browser — it depends what you care about.', 'what is the best browser for mac?'), undefined);
+  assert.equal(sanitizeSessionTitle("I'll take a look at", 'fix the sidebar', "I'll take a look at the current directory"), undefined);
+  assert.equal(sanitizeSessionTitle("I'll take a look at the current directory to see what's going on.", 'list the files'), undefined);
+  assert.equal(fallbackSessionName('“Reddit\'s” usual take: **there isn\'t** any reason beyond'), "Reddit's usual take: there isn't any");
+  assert.equal(fallbackSessionName("I'll take a look at this"), 'Untitled session');
+}
+);
+
+test('title prompt asks for a noun-phrase topic without wrappers or prompt copying', () => {
+  const prompt = readFileSync(new URL('pi-title-prompt.md', import.meta.url), 'utf8');
+  assert.match(prompt, /3–6 word noun-phrase topic/);
+  assert.match(prompt, /TestFlight next-build workflow/);
+  assert.match(prompt, /Never copy the user sentence/);
+  assert.match(prompt, /Never copy the assistant/);
+  assert.match(prompt, /Never answer the user/);
+  assert.match(prompt, /Never return “Title:”/);
+  assert.match(prompt, /“Help with…”/);
+});
+
+test('title route falls back when the model answers the question', async t => {
+  const { server } = createReplServer({
+    runAskImpl: async () => 'Done',
+    scheduleMemory: async () => {},
+    titleRpcFactory: () => ({
+      setModel: async () => undefined,
+      prompt: async () => 'There isn’t a single “best” Mac browser — it depends what you care about.',
+      dispose: () => {},
+    }),
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const base = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    await new Promise<void>(resolveClose => server.close(() => resolveClose()));
+  });
+
+  const created = await (await fetch(`${base}/sessions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  })).json() as { id: string };
+  const prompt = 'what is the best browser for mac?';
+  const titleResponse = await fetch(`${base}/sessions/${created.id}/title`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt, reply: 'Safari is the default pick.' }),
+  });
+  assert.equal(titleResponse.status, 200);
+  assert.equal((await titleResponse.json() as { name: string }).name, fallbackSessionName(prompt));
+});
 
 test('bundles the browser-safe default skills', () => {
   const expected = [
@@ -68,19 +138,26 @@ test('full chats layout and triggers are wired without attaching the chats tab',
   const background = readFileSync(new URL('background.js', extensionDirectory), 'utf8');
   const html = readFileSync(new URL('sidepanel.html', extensionDirectory), 'utf8');
   const css = readFileSync(new URL('sidepanel.css', extensionDirectory), 'utf8');
-  const source = readFileSync(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const source = ['sidepanel.js', 'sessions-ui.js']
+    .map(name => readFileSync(new URL(name, extensionDirectory), 'utf8'))
+    .join('\n');
   const openChats = background.slice(background.indexOf('async function openChatsTab'), background.indexOf('\nasync function ensureOffscreen'));
 
   assert.equal(manifest.action.default_title, 'Browser Harness');
   assert.ok(manifest.permissions.includes('contextMenus'));
+  assert.ok(manifest.permissions.includes('sidePanel'));
   assert.ok(manifest.commands['open-chats']);
-  assert.match(background, /title: 'Open side panel'/);
-  assert.match(background, /title: 'Open chats'/);
-  assert.match(openChats, /sidepanel\.html\?layout=full/);
+  assert.match(background, /title: 'Open Browser Harness'/);
+  assert.match(background, /chrome\.sidePanel\.open/);
+  assert.match(background, /isHarnessSurface\(tab\?\.url\)/);
+  assert.doesNotMatch(openChats, /sidePanel/);
+  assert.match(openChats, /getURL\('sidepanel\.html'\)/);
+  assert.doesNotMatch(openChats, /layout=full/);
   assert.match(openChats, /await detach\(shortcutTabId\)/);
   assert.doesNotMatch(openChats, /attachIfNeeded/);
   assert.match(html, /id="full-nav"/);
-  assert.match(html, /id="open-full"/);
+  assert.match(html, /id="view-home"/);
+  assert.doesNotMatch(html, /id="open-full"/);
   assert.match(html, /id="view-skills"/);
   assert.match(html, /id="view-memory"/);
   assert.match(html, /id="nav-toggle"/);
@@ -158,7 +235,19 @@ test('harness memory, skills and transcript routes stay under the harness home',
   const sessionIndex = resolve(harnessHome, 'pi-sessions', 'browser-harness-sessions.json');
   const hadSessionIndex = existsSync(sessionIndex);
   const previousSessionIndex = hadSessionIndex ? readFileSync(sessionIndex, 'utf8') : '';
-  const { server } = createReplServer();
+  let receivedTitlePrompt = '';
+  const { server } = createReplServer({
+    runAskImpl: async () => 'Done',
+    scheduleMemory: async () => {},
+    titleRpcFactory: () => ({
+      setModel: async () => undefined,
+      prompt: async message => {
+        receivedTitlePrompt = message;
+        return 'TestFlight next-build workflow';
+      },
+      dispose: () => {},
+    }),
+  });
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const address = server.address();
@@ -190,6 +279,22 @@ test('harness memory, skills and transcript routes stay under the harness home',
   assert.equal(sessionResponse.status, 201);
   const panelSession = await sessionResponse.json() as { id: string; name: string };
   createdSessionId = panelSession.id;
+  const titleResponse = await fetch(`${base}/sessions/${panelSession.id}/title`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'How do I upload another TestFlight build?',
+      reply: 'Increment the build number before uploading the archive.',
+    }),
+  });
+  assert.equal(titleResponse.status, 200);
+  assert.equal((await titleResponse.json() as { name: string }).name, 'TestFlight next-build workflow');
+  assert.equal(receivedTitlePrompt, [
+    'Name this chat. Return only a 3–6 word noun-phrase topic, not an answer.',
+    'User message: How do I upload another TestFlight build?',
+    'Assistant message: Increment the build number before uploading the archive.',
+  ].join('\n'));
+
   const renamedResponse = await fetch(`${base}/sessions/${panelSession.id}`, {
     method: 'PATCH',
     headers: { 'content-type': 'application/json' },
@@ -245,14 +350,28 @@ test('harness memory, skills and transcript routes stay under the harness home',
   mkdirSync(resolve(harnessHome, 'pi-sessions'), { recursive: true });
   writeFileSync(transcriptFile, [
     JSON.stringify({ type: 'session', id: sessionId }),
-    JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: 'Working set: empty.\n\n## User request\nHello' }] } }),
+    JSON.stringify({ type: 'message', message: { role: 'user', content: [{ type: 'text', text: "Working set: empty.\n\n## User request\n“Reddit's” usual take: **there isn't** any reason beyond" }] } }),
     JSON.stringify({ type: 'message', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'private' }, { type: 'text', text: 'Hi there' }, { type: 'toolCall', name: 'browser_open' }] } }),
     JSON.stringify({ type: 'message', message: { role: 'toolResult', content: [{ type: 'text', text: 'private tool result' }] } }),
   ].join('\n'));
+
+  const recoveredResponse = await fetch(`${base}/ask`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId, prompt: 'Follow up' }),
+  });
+  assert.equal(recoveredResponse.status, 200);
+  await recoveredResponse.text();
+  const recoveredSessions = await (await fetch(`${base}/sessions`)).json() as { sessions: Array<{ id: string; name: string }> };
+  const recoveredName = recoveredSessions.sessions.find(item => item.id === sessionId)?.name;
+  assert.equal(recoveredName, "Reddit's usual take: there isn't any");
+  assert.doesNotMatch(recoveredName ?? '', /\*\*/);
+  assert.match(readFileSync(sessionIndex, 'utf8'), new RegExp(`"id": "${sessionId}"[\\s\\S]*?"name": "Reddit's usual take: there isn't any"`));
+
   assert.deepEqual(await (await fetch(`${base}/sessions/${sessionId}/messages`)).json(), {
     messages: [
-      { role: 'user', text: 'Hello' },
-      { role: 'assistant', text: 'Hi there' },
+      { role: 'user', text: "“Reddit's” usual take: **there isn't** any reason beyond" },
+      { role: 'assistant', text: 'Hi there', thinking: 'private', tools: [{ name: 'browser_open' }] },
     ],
   });
 });

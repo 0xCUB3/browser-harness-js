@@ -1,30 +1,61 @@
 <!doctype html>
-<html>
+<html data-nav-collapsed="true">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Browser Harness</title>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="sidepanel.css">
+  <link rel="stylesheet" href="newtab.css">
+  <script src="layout.js"></script>
 </head>
-<body>
+<body data-mode="search">
   <aside id="full-nav" class="full-nav" hidden>
-    <button id="nav-toggle" class="nav-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
-      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M14.7 6.3 9 12l5.7 5.7-1.4 1.4L6.2 12l7.1-7.1 1.4 1.4Z"/></svg>
-    </button>
-    <button id="nav-new-chat" class="nav-new-chat" type="button" aria-label="New chat" title="New chat"><span class="nav-new-icon" aria-hidden="true">+</span><span class="nav-label">New chat</span></button>
+    <div class="nav-new-row">
+      <button id="nav-new-chat" class="nav-new-chat" type="button" aria-label="New chat" title="New chat"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg><span class="nav-label">New chat</span></button>
+      <button id="nav-toggle" class="nav-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/></svg>
+      </button>
+    </div>
     <nav class="nav-primary" aria-label="Browser Harness">
-      <button type="button" data-nav="skills"><span class="nav-label">Skills</span></button>
-      <button type="button" data-nav="memory"><span class="nav-label">Memory</span></button>
-      <button type="button" data-nav="settings"><span class="nav-label">Settings</span></button>
+      <button type="button" data-nav="skills"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3Z"/></svg><span class="nav-label">Skills</span></button>
+      <button type="button" data-nav="memory"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v13"/><path d="M5 19a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4a4 4 0 0 1 4 4 4 4 0 0 1 4-4h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2 2 2 0 0 0-2-2z"/></svg><span class="nav-label">Memory</span></button>
+      <button type="button" data-nav="settings"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg><span class="nav-label">Settings</span></button>
     </nav>
     <h2 class="nav-heading">Chats</h2>
     <div id="full-chats" class="full-chats" role="list"></div>
   </aside>
   <main class="panel-main">
   <button id="nav-expand" class="nav-expand" type="button" aria-label="Expand sidebar" title="Expand sidebar">
-    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="m9.3 6.3 5.7 5.7-5.7 5.7 1.4 1.4 7.1-7.1-7.1-7.1-1.4 1.4Z"/></svg>
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4" width="17" height="16" rx="2"/><path d="M9 4v16"/></svg>
   </button>
+  <section id="view-home" class="view" hidden>
+    <div class="newtab-shell">
+      <section class="search-area" aria-label="Search or ask Browser Harness">
+        <form id="search-form" class="search-pill">
+          <div class="search-field">
+            <div id="query-ghost" class="query-ghost" aria-hidden="true"></div>
+            <input id="query" type="text" autocomplete="off" spellcheck="false" placeholder="Search or type a URL" aria-label="Search or type a URL" role="combobox" aria-autocomplete="list" aria-controls="search-suggest" aria-expanded="false">
+          </div>
+          <div class="mode-controls">
+            <span class="tab-hint" aria-label="Tab to switch"><kbd>Tab</kbd> to switch</span>
+            <div class="mode-switch" role="group" aria-label="Input mode">
+              <button id="search-mode" class="active" type="button" aria-pressed="true">Search</button>
+              <button id="ask-mode" type="button" aria-pressed="false">Ask</button>
+            </div>
+          </div>
+        </form>
+        <ul id="search-suggest" class="search-suggest" hidden role="listbox" aria-label="Search suggestions"></ul>
+        <p id="home-status" class="status" role="status" hidden></p>
+      </section>
+      <section class="chats" aria-labelledby="chats-heading">
+        <h1 id="chats-heading">Recent threads</h1>
+        <div id="chat-cards" class="chat-cards"></div>
+        <p id="chats-empty" class="chats-empty" hidden>No recent chats yet.</p>
+      </section>
+    </div>
+  </section>
+
   <section id="view-setup" class="view" hidden>
     <div class="setup">
       <h1>Browser Harness</h1>
@@ -41,9 +72,6 @@
         <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5H7z"/></svg>
       </button>
       <button id="new-session" class="text-btn new-session" type="button">New session</button>
-      <button id="open-full" class="icon-btn open-full" type="button" aria-label="Open chats in a tab" title="Open chats in a tab">
-        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M5 4h6v2H7v11h11v-4h2v6H5V4Zm8 0h7v7h-2V7.4l-7.3 7.3-1.4-1.4L16.6 6H13V4Z"/></svg>
-      </button>
       <button id="open-settings" class="icon-btn" type="button" aria-label="Settings">
         <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
           <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.1a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.69.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.26.12.55.02.69-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/>
@@ -55,6 +83,9 @@
       <div id="site-chip-wrap" class="site-chip-wrap" hidden></div>
     </div>
     <div class="composer-dock">
+      <button id="jump-latest" class="jump-latest" type="button" hidden aria-label="Jump to latest" title="Jump to latest">
+        <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+      </button>
       <div id="pending-chip" class="pending-chip" hidden>
         <span class="pending-icon" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 7 4.5 11.5 9 16M5 11.5h8.5a5 5 0 0 1 5 5V18"/></svg>
@@ -97,6 +128,9 @@
               </svg>
             </button>
           </div>
+          <button id="stop" class="stop-btn" type="button" hidden aria-label="Stop generating" title="Stop">
+            <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2.5" fill="currentColor"/></svg>
+          </button>
           <div class="send-split">
             <button id="send" class="send-btn" type="button" disabled aria-label="Send" title="Send">
               <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
@@ -222,6 +256,18 @@
     <input id="popover-filter" class="popover-filter" type="search" placeholder="Filter models" autocomplete="off" hidden>
     <div id="popover-list" class="popover-list" role="listbox"></div>
   </div>
+
+  <aside id="source-card" class="source-card" aria-label="Source preview" hidden>
+    <div class="source-card-nav">
+      <button id="source-card-prev" type="button" aria-label="Previous source">‹</button>
+      <button id="source-card-next" type="button" aria-label="Next source">›</button>
+    </div>
+    <a id="source-card-link" class="source-card-link" target="_blank" rel="noreferrer">
+      <img id="source-card-favicon" class="source-card-favicon" alt="" width="20" height="20">
+      <span id="source-card-title" class="source-card-title"></span>
+    </a>
+    <p id="source-card-snippet" class="source-card-snippet"></p>
+  </aside>
 
   </main>
   <script src="vendor/katex/katex.min.js"></script>

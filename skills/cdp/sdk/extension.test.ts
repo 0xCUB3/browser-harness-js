@@ -5,6 +5,13 @@ import { runInNewContext } from 'node:vm';
 
 const extensionDirectory = new URL('../../../extension/', import.meta.url);
 
+const uiModuleNames = [
+  'sidepanel.js', 'dom.js', 'state.js', 'views.js', 'home.js', 'sessions-ui.js',
+  'editors.js', 'pickers.js', 'tabs-ui.js', 'composer.js', 'sources.js', 'transcript.js', 'markdown.js',
+];
+const readUiSource = async () =>
+  (await Promise.all(uiModuleNames.map(name => readFile(new URL(name, extensionDirectory), 'utf8')))).join('\n');
+
 test('offscreen document does not access extension storage', async () => {
   const source = await readFile(new URL('offscreen.js', extensionDirectory), 'utf8');
   assert.doesNotMatch(source, /chrome\.storage/);
@@ -47,18 +54,76 @@ test('local chats URLs replace the shortcut tab or focus an existing full chats 
   assert.equal(context.isChatsShortcut?.('http://[::1]:9876/chats?from=bookmark', 9876), true);
   assert.equal(context.isChatsShortcut?.('http://127.0.0.1:1234/chats', 9876), false);
   assert.equal(context.isChatsShortcut?.('https://127.0.0.1:9876/chats', 9876), false);
-  assert.match(source, /chrome\.tabs\.onUpdated\.addListener\(\(tabId, changeInfo, tab\) => \{\s*handleChatsShortcut\(tabId, changeInfo\.url \|\| tab\.url \|\| '', tab\.windowId\)/);
+  assert.match(source, /chrome\.tabs\.onUpdated\.addListener\(\(tabId, changeInfo, tab\) => \{\s*if \(changeInfo\.url\) handleChatsShortcut\(tabId, changeInfo\.url, tab\.windowId\)/);
   assert.match(shortcut, /const \{ daemonPort = 9876 \} = await chrome\.storage\.local\.get\('daemonPort'\)/);
   assert.match(shortcut, /pendingChatsShortcuts\.has\(tabId\)/);
   assert.match(shortcut, /\['127\.0\.0\.1', 'localhost', '\[::1\]'\]\.includes\(parsed\.hostname\)/);
   assert.match(shortcut, /parsed\.port === String\(daemonPort\)/);
   assert.ok(shortcut.includes("&& /^\\/chats\\/?$/.test(parsed.pathname);"));
-  assert.match(openChats, /sidepanel\.html\?layout=full/);
+  assert.match(openChats, /getURL\('sidepanel\.html'\)/);
+  assert.doesNotMatch(openChats, /layout=full/);
   assert.match(openChats, /await detach\(existing\.id\)/);
   assert.match(openChats, /await detach\(shortcutTabId\)/);
-  assert.match(openChats, /chrome\.tabs\.remove\(shortcutTabId\)/);
+  assert.match(openChats, /chrome\.tabs\.remove\(sourceTab\.id\)/);
   assert.match(openChats, /chrome\.tabs\.update\(shortcutTabId, \{ url: baseUrl, active: true \}\)/);
   assert.doesNotMatch(openChats, /attachIfNeeded/);
+  assert.ok(matcher.includes('chrome:\\/\\/newtab'));
+  assert.match(matcher, /chrome\.runtime\.getURL\('ntp-redirect\.html'\)/);
+  assert.match(matcher, /chrome\.runtime\.getURL\('newtab\.html'\)/);
+
+  const tabCalls: unknown[] = [];
+  const ntpContext: {
+    chrome: Record<string, unknown>;
+    tabCalls: unknown[];
+    openChatsTab?: (windowId?: number, shortcutTabId?: number) => Promise<unknown>;
+  } = {
+    tabCalls,
+    chrome: {
+      runtime: { getURL: (path: string) => `chrome-extension://test/${path}` },
+      tabs: {
+        query: async () => [{ id: 41, index: 3, windowId: 7, active: true, url: 'chrome://newtab/' }],
+        create: async (options: unknown) => { tabCalls.push(['create', options]); return { id: 42 }; },
+        update: async (id: number, options: unknown) => { tabCalls.push(['update', id, options]); },
+        remove: async (id: number) => { tabCalls.push(['remove', id]); },
+      },
+      windows: { update: async () => undefined },
+    },
+  };
+  runInNewContext(
+    `${matcher}\n${openChats}\nasync function detach(id) { tabCalls.push(['detach', id]); }\nglobalThis.openChatsTab = openChatsTab;`,
+    ntpContext,
+  );
+  await ntpContext.openChatsTab?.(7);
+  assert.deepEqual(JSON.parse(JSON.stringify(tabCalls)), [
+    ['create', { url: 'chrome-extension://test/sidepanel.html', active: true, index: 3, windowId: 7 }],
+    ['detach', 41],
+    ['remove', 41],
+  ]);
+  assert.match(source, /message\?\.type === 'openChats'[\s\S]*?const windowId = message\.windowId \?\? sender\?\.tab\?\.windowId;[\s\S]*?openChatsTab\(windowId\)/);
+  assert.match(source, /error => sendResponse\(\{ ok: false, error: error\?\.message \|\| String\(error\) \}\)/);
+});
+
+test('fullscreen rail keeps the collapse toggle on the New chat row without an active pip', async () => {
+  const [html, css] = await Promise.all([
+    readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
+    readFile(new URL('newtab.css', extensionDirectory), 'utf8'),
+  ]);
+  const toggleRule = css.match(/\.nav-toggle\s*\{([^}]*)\}/)?.[1] || '';
+  const expandRule = css.match(/\.nav-expand\s*\{([^}]*)\}/)?.[1] || '';
+
+  assert.match(html, /<div class="nav-new-row">[\s\S]*id="nav-new-chat"[\s\S]*id="nav-toggle"[\s\S]*<\/div>\s*<nav class="nav-primary"/);
+  assert.doesNotMatch(toggleRule, /align-self:\s*flex-end/);
+  assert.doesNotMatch(css, /\.active::after|#6aa1ed/i);
+  assert.match(css, /\.full-chats button\s*\{[\s\S]*?padding:\s*8px 10px;/);
+  assert.match(css, /\.full-chats button\s*\{[\s\S]*?flex:\s*0 0 auto;/);
+  assert.match(css, /\.full-chats\s*\{[\s\S]*?gap:\s*4px;/);
+  assert.doesNotMatch(css, /\.full-chats button\s*\{[\s\S]*?padding:\s*5px 16px 5px 6px;/);
+  assert.match(css, /#full-nav:not\(\[hidden\]\)\s*\{[\s\S]*?background:\s*#f2f2f2;/);
+  assert.match(css, /#full-nav:not\(\[hidden\]\)\s*\{[\s\S]*?border-right:\s*1px solid #dadce0;/);
+  assert.doesNotMatch(css, /#full-nav[\s\S]{0,200}var\(--/);
+  assert.match(expandRule, /width:\s*30px/);
+  assert.match(expandRule, /height:\s*30px/);
+  assert.match(expandRule, /left:\s*10px/);
 });
 
 test('side panel prompt enables a full Pi agent without terminating the running REPL', async () => {
@@ -68,6 +133,8 @@ test('side panel prompt enables a full Pi agent without terminating the running 
   ]);
 
   assert.match(prompt, /full Pi coding agent/);
+  assert.match(prompt, /general assistant/);
+  assert.match(prompt, /search memory and the web before answering/);
   assert.match(prompt, /REPL is already running/);
   assert.match(prompt, /Never run `browser-harness-js --stop` or `browser-harness-js --restart`/);
   assert.match(prompt, /Never POST `\/quit` or call `process\.exit`/);
@@ -80,19 +147,20 @@ test('side panel prompt enables a full Pi agent without terminating the running 
   assert.match(repl, /console\.error\('Browser Harness REPL quit requested via POST \/quit'\)/);
 });
 
-test('toolbar action opens the side panel before awaiting attach without toggling', async () => {
+test('toolbar action opens chats and attaches without toggling', async () => {
   const source = await readFile(new URL('background.js', extensionDirectory), 'utf8');
   const actionHandler = source.slice(
     source.indexOf('chrome.action.onClicked.addListener'),
     source.indexOf('chrome.commands.onCommand.addListener'),
   );
-  const openIndex = actionHandler.indexOf('chrome.sidePanel.open({ windowId: tab.windowId })');
   const attachIndex = actionHandler.indexOf('attachIfNeeded(tab.id)');
-  const awaitIndex = actionHandler.indexOf('await');
 
-  assert.ok(openIndex >= 0 && openIndex < attachIndex && attachIndex < awaitIndex);
+  assert.ok(actionHandler.includes('openHarness(tab)'));
+  assert.ok(attachIndex >= 0);
   assert.doesNotMatch(actionHandler, /toggleAttach/);
-  assert.match(source, /chrome\.sidePanel\.setPanelBehavior\(\{ openPanelOnActionClick: true \}\)/);
+  assert.match(source, /chrome\.sidePanel\.open/);
+  assert.match(source, /isHarnessSurface\(tab\?\.url\)/);
+  assert.match(source, /setPanelBehavior\(\{ openPanelOnActionClick: false \}\)/);
 });
 
 test('agent-created tabs stay backgrounded and join the collapsed Agent Tabs group', async () => {
@@ -144,8 +212,8 @@ test('active web tabs attach automatically while extension and daemon tabs are r
 });
 
 test('side panel target selection skips the full chats UI and daemon pages', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
-  const targetSource = source.slice(source.indexOf('function isTargetPage'), source.indexOf('\nfunction activeRequests'));
+  const source = await readFile(new URL('tabs-ui.js', extensionDirectory), 'utf8');
+  const targetSource = source.slice(source.indexOf('function isTargetPage'), source.indexOf('\nexport {'));
   const context: {
     URL: typeof URL;
     settings: { daemonPort: number };
@@ -172,7 +240,7 @@ test('side panel target selection skips the full chats UI and daemon pages', asy
 
 test('side panel queues busy sends by default and offers per-message actions', async () => {
   const [source, html] = await Promise.all([
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
   ]);
   const updateSend = source.slice(source.indexOf('function updateSend()'), source.indexOf('\nfunction autosize()'));
@@ -194,7 +262,7 @@ test('side panel queues busy sends by default and offers per-message actions', a
   assert.match(sendFlow, /new AbortController\(\)/);
   assert.match(sendFlow, /signal: controller\.signal/);
   assert.match(sendFlow, /request\.controller\.abort\(\)/);
-  assert.match(sendFlow, /error\?\.name === 'AbortError'\) finishAssistant\(assistant\)/);
+  assert.match(sendFlow, /error\?\.name === 'AbortError' \|\| controller\.signal\.aborted\) finishAssistant\(assistant\)/);
   assert.doesNotMatch(sendFlow, /AbortError[^\n]+addError/);
   assert.match(sendFlow, /pauseQueueDrain = true[\s\S]*Promise\.allSettled[\s\S]*startAsk\(item\)[\s\S]*pauseQueueDrain = false/);
   assert.match(sendFlow, /\.finally\(\(\) => \{[\s\S]*inFlightAsks\.delete\(request\)[\s\S]*drainQueue\(\)/);
@@ -203,7 +271,7 @@ test('side panel queues busy sends by default and offers per-message actions', a
 
 test('composer attaches files from picker, drop and paste and forwards image payloads', async () => {
   const [source, html, css] = await Promise.all([
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
     readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
   ]);
@@ -224,10 +292,12 @@ test('composer attaches files from picker, drop and paste and forwards image pay
 
 test('side panel launches and switches sessions without replaying the visible transcript', async () => {
   const [source, html] = await Promise.all([
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
   ]);
-  const sendAsk = source.slice(source.indexOf('async function sendAsk('), source.indexOf('\nfunction applySseBlock'));
+  const sendAsk = source.slice(source.indexOf('async function sendAsk('), source.indexOf('\nfunction setPending'));
+  const performAsk = source.slice(source.indexOf('async function performAsk('), source.indexOf('\nfunction applySseBlock'));
+  const titleFlow = source.slice(source.indexOf('async function requestSessionTitle('), source.indexOf('\nfunction setPending'));
 
   assert.match(html, /id="session-btn"/);
   assert.match(html, /id="new-session"[^>]*>New session</);
@@ -250,14 +320,31 @@ test('side panel launches and switches sessions without replaying the visible tr
   const switchFlow = source.slice(source.indexOf('async function switchSession'), source.indexOf('\nasync function hydrateTranscript'));
   assert.doesNotMatch(switchFlow, /\.abort\(/);
   assert.match(source, /function fallbackSessionName\(prompt\)/);
+  const fallbackSource = source.slice(source.indexOf('function fallbackSessionName'), source.indexOf('\nfunction updateSessionName'));
+  const fallbackContext: { fallbackSessionName?: (prompt: string) => string } = {};
+  runInNewContext(`${fallbackSource}\nglobalThis.fallbackSessionName = fallbackSessionName;`, fallbackContext);
+  assert.equal(fallbackContext.fallbackSessionName?.('“Reddit\'s” usual take: **there isn\'t** any reason'), "Reddit's usual take: there isn't any");
+  assert.doesNotMatch(fallbackContext.fallbackSessionName?.('__Markdown__ `session` # title') ?? '', /[*_`#]/);
+  assert.match(source, /normalized === 'new session' \|\| normalized === 'recovered session' \|\| normalized === 'untitled session'/);
+  assert.match(source, /function canReplaceSessionName\(name, prompt, reply\)/);
+  assert.match(source, /function looksLikeAssistantTitle/);
+  assert.match(sendAsk, /applyFallbackSessionTitle\(item\)/);
+  assert.doesNotMatch(sendAsk, /requestSessionTitle/);
+  assert.match(performAsk, /finishAssistant\(assistant\);[\s\S]*?if \(assistant\.bodyText\.trim\(\)\) requestSessionTitle\(\{ \.\.\.item, reply: assistant\.bodyText \}\)/);
+  assert.match(titleFlow, /const body = \{ prompt: item\.prompt, reply: item\.reply \}/);
+  assert.match(titleFlow, /\/title[\s\S]*?await applyFallbackSessionTitle\(item\)/);
+  assert.match(source, /if \(!firstAssistantReply && text\.trim\(\)\) firstAssistantReply = text\.trim\(\)/);
+  assert.match(source, /function openSession\(id\)/);
+  assert.match(source, /chrome\.storage\.local\.set\(\{ lastView: 'chat', sessionId: id \}\)/);
+  assert.match(source, /requestSessionTitle\(\{ sessionId: id, prompt: firstUserPrompt, reply: firstAssistantReply \}\)/);
   assert.match(source, /method: 'PATCH'/);
-  assert.match(sendAsk, /const body = \{ prompt: item\.prompt, harness: settings\.harness, sessionId: item\.sessionId \}/);
+  assert.match(performAsk, /const body = \{ prompt: item\.prompt, harness: settings\.harness, sessionId: item\.sessionId \}/);
   assert.doesNotMatch(source, /visibleConversationPrompt/);
 });
 
 test('search tool rows prefer structured results and render favicon cards', async () => {
   const [source, css] = await Promise.all([
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
   ]);
 
@@ -271,7 +358,7 @@ test('search tool rows prefer structured results and render favicon cards', asyn
 
 test('settings exposes a chat model picker and persists the shared selection', async () => {
   const [source, html] = await Promise.all([
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
   ]);
 
@@ -282,18 +369,25 @@ test('settings exposes a chat model picker and persists the shared selection', a
 });
 
 test('thinking completion keeps a timed collapsed row before trace wrapping', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const [source, css] = await Promise.all([
+    readUiSource(),
+    readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
+  ]);
   const endThinking = source.slice(source.indexOf('function endThinking'), source.indexOf('\nfunction startAssistant'));
   const finishAssistant = source.slice(source.indexOf('function finishAssistant'), source.indexOf('\nfunction failAssistant'));
+  const appendThinking = source.slice(source.indexOf('function appendAssistantBlock'), source.indexOf('\nfunction timelineBlock'));
 
   assert.match(endThinking, /Thought for \$\{seconds\}s/);
   assert.match(endThinking, /element\.open = false/);
+  assert.match(appendThinking, /element\.open = false/);
   assert.match(finishAssistant, /endThinking\(assistant\)/);
   assert.match(finishAssistant, /collapseTrace\(assistant\)/);
+  assert.match(css, /\.work-trace:not\(\[open\]\) \.thinking \{ display: none; \}/);
+  assert.match(css, /\.work-trace\[open\] \.thinking/);
 });
 
 test('collapseTrace keeps only the last assistant body outside the worked trace', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const source = await readUiSource();
   const helperSource = source.slice(source.indexOf('function formatWorked'), source.indexOf('\nfunction finishAssistant'));
 
   class FakeClassList {
@@ -366,26 +460,153 @@ test('collapseTrace keeps only the last assistant body outside the worked trace'
   assert.equal(thinking.open, false);
 });
 
-test('new tab override toggles Search and Ask and routes asks through the side panel', async () => {
-  const [manifestText, html, source] = await Promise.all([
+test('new tab home searches, asks and opens chats in the same page', async () => {
+  const [manifestText, redirect, html, source, stub] = await Promise.all([
     readFile(new URL('manifest.json', extensionDirectory), 'utf8'),
-    readFile(new URL('newtab.html', extensionDirectory), 'utf8'),
+    readFile(new URL('ntp-redirect.html', extensionDirectory), 'utf8'),
+    readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('newtab.js', extensionDirectory), 'utf8'),
   ]);
-  const manifest = JSON.parse(manifestText) as { chrome_url_overrides?: { newtab?: string } };
+  const manifest = JSON.parse(manifestText) as { chrome_url_overrides?: { newtab?: string }; side_panel?: unknown; permissions?: string[] };
 
-  assert.equal(manifest.chrome_url_overrides?.newtab, 'newtab.html');
+  assert.equal(manifest.chrome_url_overrides?.newtab, 'ntp-redirect.html');
+  assert.equal((manifest.side_panel as { default_path?: string } | undefined)?.default_path, 'sidepanel.html');
+  assert.ok(manifest.permissions?.includes('sidePanel'));
+  assert.match(redirect, /src="newtab\.js"/);
+  assert.match(stub, /location\.replace\(chrome\.runtime\.getURL\('sidepanel\.html\?view=home'\)\)/);
   assert.match(html, /Search or type a URL/);
   assert.match(html, /Tab<\/kbd> to switch/);
-  assert.match(source, /event\.key !== 'Tab'/);
-  assert.match(source, /event\.preventDefault\(\)/);
-  assert.match(source, /setMode\(mode === 'search' \? 'ask' : 'search'\)/);
-  assert.match(source, /pendingNewTabAsk/);
-  assert.match(source, /type: 'openSidePanel'/);
+  assert.match(html, /id="view-home"/);
+  assert.doesNotMatch(html, /id="open-full"/);
+  assert.match(source, /event\.key === 'Tab'/);
+  assert.match(source, /setHomeMode\(homeMode === 'search' \? 'ask' : 'search'\)/);
+  assert.match(source, /event\.key === 'Enter'/);
+  assert.match(source, /homeForm\.addEventListener\('submit', submitHomeQuery\)/);
+  assert.match(html, /id="search-suggest"/);
+  assert.match(html, /id="query-ghost"/);
+  assert.match(source, /chrome\.history\?\.search/);
+  assert.match(source, /chrome\.bookmarks\?\.search/);
+  assert.match(source, /chrome\.topSites\?\.get/);
+  assert.match(source, /complete\/search\?client=firefox/);
+  assert.ok(manifest.permissions?.includes('history'));
+  assert.ok(manifest.permissions?.includes('bookmarks'));
+  assert.ok(manifest.permissions?.includes('topSites'));
+  assert.match(source, /chrome\.tabs\.getCurrent\(\)/);
+  assert.match(source, /chrome\.tabs\.update\(tab\.id, \{ url: searchUrl\(value\) \}\)/);
+  assert.match(source, /async function sendHomeAsk/);
+  assert.match(source, /showView\('chat'\)/);
+  assert.match(source, /await createSession\(\)/);
+  assert.doesNotMatch(source, /openFullChats/);
+  assert.doesNotMatch(source, /sidePanel\.open|type: 'openSidePanel'/);
+  assert.match(source, /document\.addEventListener\('mousedown'/);
+  assert.match(source, /if \(persist && name !== 'setup'\) chrome\.storage\.local\.set\(\{ lastView: name \}\)/);
+  assert.match(source, /query\.get\('view'\) \|\| query\.get\('nav'\)/);
+  assert.match(source, /queryView \|\| stored\.lastView/);
+  assert.match(source, /showView\(requested, !queryView && requested !== stored\.lastView\)/);
+  assert.match(source, /if \(!isFull\) \{[\s\S]*?showView\('chat', false\);[\s\S]*?await createSession\(\)/);
+  assert.match(source, /function acceptTabComplete/);
+  assert.match(source, /if \(!q\) return \[\];/);
+  assert.match(source, /function addHydratedAssistant\(message\)/);
+  assert.match(source, /timelineBlock\(assistant, 'thinking'\)/);
+  assert.match(html, /src="layout\.js"/);
+});
+
+test('new tab rail is inset, ignores focus stealing and toggles in place', async () => {
+  const [html, css, source] = await Promise.all([
+    readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
+    readFile(new URL('newtab.css', extensionDirectory), 'utf8'),
+    readUiSource(),
+  ]);
+  const mouseDown = source.slice(
+    source.indexOf("document.addEventListener('mousedown'"),
+    source.indexOf('searchModeBtn.addEventListener') > 0 ? source.indexOf('init();') : source.length,
+  );
+  const toggle = source.slice(source.indexOf('async function setNavCollapsed'), source.indexOf('\nfunction showView'));
+  const expandRule = css.match(/\.nav-expand\s*\{([^}]*)\}/)?.[1] || '';
+
+  assert.match(html, /id="nav-expand"/);
+  assert.match(html, /id="full-nav"/);
+  assert.match(html, /<div class="nav-new-row">[\s\S]*id="nav-new-chat"[\s\S]*id="nav-toggle"/);
+  assert.match(mouseDown, /target\.closest\('#nav-expand, #nav-toggle, #full-nav,/);
+  assert.match(toggle, /document\.body\.dataset\.navCollapsed = String\(collapsed\)/);
+  assert.match(toggle, /fullNav\.hidden = collapsed/);
+  assert.match(toggle, /navExpandBtn\.hidden = !collapsed/);
+  assert.match(toggle, /chrome\.storage\.local\.set\(\{ fullNavCollapsed: collapsed \}\)/);
+  assert.doesNotMatch(toggle, /location\.replace|tabs\.create/);
+  assert.match(source, /stored\.fullNavCollapsed !== false/);
+  assert.match(source, /changes\.fullNavCollapsed\?\.newValue/);
+  assert.match(source, /function renderHomeChats/);
+  assert.doesNotMatch(source.slice(source.indexOf('function renderHomeChats'), source.indexOf('\nfunction relativeTime')), /pip|::after/);
+  assert.match(expandRule, /left:\s*(?:8|9|10|11|12)px/);
+  assert.match(expandRule, /top:\s*(?:8|9|10|11|12)px/);
+  assert.match(expandRule, /width:\s*(?:28|29|30|31|32)px/);
+  assert.match(css, /\.full-nav:not\(\[hidden\]\)\s*\{[\s\S]*?width:\s*232px/);
+  assert.match(css, /\.search-area\.has-suggest/);
+  assert.match(css, /\.search-suggest-copy \{[\s\S]*flex-direction:\s*column/);
+});
+
+test('suggest ranking scores fuzzy matches, frecency buckets and adaptive pins', async () => {
+  const source = await readFile(new URL('home.js', extensionDirectory), 'utf8');
+  const start = source.indexOf('function fuzzyScore');
+  const end = source.indexOf('\nasync function topSitesMatching');
+  const engine = source.slice(start, end);
+  const sandbox: Record<string, unknown> = {
+    queryEl: { value: 'gh' },
+    hostOf: (url: string) => { try { return new URL(url).hostname; } catch { return url; } },
+    searchUrl: (value: string) => `https://www.google.com/search?q=${encodeURIComponent(value)}`,
+  };
+  runInNewContext(engine + '\n;({ fuzzyScore, recencyWeight, rankSuggestions })', sandbox);
+  const { fuzzyScore, recencyWeight, rankSuggestions } = sandbox as {
+    fuzzyScore: (pattern: string, text: string) => { score: number; positions: number[] } | null;
+    recencyWeight: (lastVisit: number) => number;
+    rankSuggestions: (items: unknown[], q: string) => Array<{ kind: string; url: string; marks: number[] | null }>;
+  };
+
+  // fzf-style bonuses: string-start match beats mid-word, consecutive beats scattered, camel bumps.
+  const boundary = fuzzyScore('git', 'github.com');
+  const midword = fuzzyScore('git', 'digitize');
+  assert.ok(boundary && midword, 'both match');
+  assert.ok(boundary.score > midword.score, 'string-start match should beat mid-word match');
+  assert.equal(JSON.stringify(boundary?.positions), '[0,1,2]');
+  const consecutive = fuzzyScore('ab', 'abc');
+  const scattered = fuzzyScore('ab', 'aXb');
+  assert.ok(consecutive.score > scattered.score, 'consecutive match beats scattered');
+  const camel = fuzzyScore('bf', 'BigFish');
+  const plain = fuzzyScore('bf', 'bigfish');
+  assert.ok(camel.score > plain.score, 'camelCase hump bonus applies');
+  assert.equal(fuzzyScore('xyz', 'github.com'), null, 'non-matching pattern is null');
+
+  // Firefox frecency buckets: 4d=100, 14d=70, 31d=50, 90d=30, older=10.
+  const day = 86_400_000;
+  assert.equal(recencyWeight(Date.now() - day), 100);
+  assert.equal(recencyWeight(Date.now() - 10 * day), 70);
+  assert.equal(recencyWeight(Date.now() - 20 * day), 50);
+  assert.equal(recencyWeight(Date.now() - 60 * day), 30);
+  assert.equal(recencyWeight(Date.now() - 200 * day), 10);
+  assert.equal(recencyWeight(0), 10);
+
+  // rankSuggestions: open tab bonus, recency blend, always a search fallback row.
+  const items = [
+    { kind: 'tab', title: 'Right Hand Coffee', url: 'https://righthandcoffee.com', value: 'https://righthandcoffee.com', lastVisit: Date.now(), visitCount: 1 },
+    { kind: 'history', title: 'GitHub', url: 'https://github.com/dashboard', value: 'https://github.com/dashboard', lastVisit: Date.now(), visitCount: 12 },
+    { kind: 'search', title: 'gh', url: 'https://www.google.com/search?q=gh', value: 'gh', lastVisit: 0, visitCount: 0 },
+    { kind: 'adaptive', title: 'GitHub Gists', url: 'https://gist.github.com/mine', value: 'https://gist.github.com/mine', lastVisit: Date.now(), visitCount: 1, adaptiveCount: 8 },
+  ];
+  const ranked = rankSuggestions(items, 'gh');
+  assert.ok(ranked.length >= 3, 'renders several rows');
+  assert.ok(ranked[0].kind !== 'search', 'a local result leads');
+  assert.ok(ranked.some(item => item.url === 'https://gist.github.com/mine'), 'adaptive pin ranks in list');
+  const fallback = ranked[ranked.length - 1];
+  assert.equal(fallback.kind, 'search');
+  assert.ok(fallback.url.includes('google.com/search'), 'last row is the search fallback');
+  const tabRow = ranked.find(item => item.kind === 'tab');
+  assert.ok(tabRow, 'weak tab match still surfaces');
+  assert.ok(ranked.every(item => item.kind !== 'search' || item.marks === null), 'search rows carry no marks');
 });
 
 test('assistant timeline appends thinking, tools and text in stream order', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const source = await readUiSource();
   const helperSource = source.slice(
     source.indexOf('function appendAssistantBlock'),
     source.indexOf('\nfunction startAssistant'),
@@ -450,7 +671,7 @@ test('assistant timeline appends thinking, tools and text in stream order', asyn
 });
 
 test('side panel parses GFM pipe tables without treating lone pipe rows as tables', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const source = await readUiSource();
   const helperSource = source.slice(source.indexOf('function hasUnescapedPipe'), source.indexOf('\nfunction renderMarkdown'));
   const context: { parseMarkdownTable?: (lines: string[], start: number) => any } = {};
   runInNewContext(
@@ -480,10 +701,88 @@ test('side panel parses GFM pipe tables without treating lone pipe rows as table
   assert.match(source, /!parseMarkdownTable\(lines, i\)/);
 });
 
+test('assistant sources use stripped host pills, collapse adjacent cites and expose grouped card controls', async () => {
+  const [source, html, css] = await Promise.all([
+    readUiSource(),
+    readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
+    readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
+  ]);
+  const hostSource = source.slice(source.indexOf('function sourceHost'), source.indexOf('\nfunction sourceUrlKey'));
+  const groupSource = source.slice(source.indexOf('function groupSourcePills'), source.indexOf('\nfunction cancelSourceCardHide'));
+  const context: {
+    URL: typeof URL;
+    Node: { TEXT_NODE: number; ELEMENT_NODE: number };
+    sourceHost?: (url: string) => string;
+    groupSourcePills?: (root: any) => void;
+  } = { URL, Node: { TEXT_NODE: 3, ELEMENT_NODE: 1 } };
+  runInNewContext(
+    `${hostSource}\n${groupSource}\nglobalThis.sourceHost = sourceHost; globalThis.groupSourcePills = groupSourcePills;`,
+    context,
+  );
+
+  assert.equal(context.sourceHost?.('https://www.michael.team/archive'), 'michael.team');
+  assert.equal(context.sourceHost?.('https://reddit.com/r/ipad'), 'reddit.com');
+
+  class FakeNode {
+    nodeType: number;
+    textContent: string;
+    parent: FakeRoot | null = null;
+    constructor(nodeType: number, textContent = '') { this.nodeType = nodeType; this.textContent = textContent; }
+    get nextSibling(): FakeNode | null {
+      if (!this.parent) return null;
+      return this.parent.children[this.parent.children.indexOf(this) + 1] || null;
+    }
+    remove() {
+      if (!this.parent) return;
+      this.parent.children = this.parent.children.filter(node => node !== this);
+      this.parent = null;
+    }
+  }
+  class FakeLink extends FakeNode {
+    classList = { contains: (name: string) => name === 'cite' };
+    dataset: Record<string, string> = {};
+    href = '';
+    attributes: Record<string, string> = {};
+    _sourceValues: Array<{ url: string; host: string; label: string }>;
+    constructor(url: string, host: string) {
+      super(1, host);
+      this.href = url;
+      this._sourceValues = [{ url, host, label: host }];
+    }
+    setAttribute(name: string, value: string) { this.attributes[name] = value; }
+  }
+  class FakeRoot {
+    children: FakeNode[];
+    constructor(children: FakeNode[]) {
+      this.children = children;
+      children.forEach(node => { node.parent = this; });
+    }
+    querySelectorAll() { return this.children.filter(node => node instanceof FakeLink); }
+  }
+
+  const first = new FakeLink('https://www.michael.team/', 'michael.team');
+  const second = new FakeLink('https://hellobrio.com/', 'hellobrio.com');
+  const root = new FakeRoot([first, new FakeNode(3, ' \n '), second]);
+  context.groupSourcePills?.(root);
+  assert.equal(root.children.length, 1);
+  assert.equal(first.textContent, 'michael.team +1');
+  assert.equal(first._sourceValues.length, 2);
+  assert.match(source, /a\.className = 'cite'/);
+  assert.match(source, /addSourceCatalog\(assistant\.sourceCatalog, results\)/);
+  assert.match(source, /snippet', 'description', 'content'/);
+  assert.match(html, /id="source-card"/);
+  assert.match(html, /id="source-card-prev"/);
+  assert.match(html, /id="source-card-next"/);
+  assert.match(source, /sourceCardPrev\.hidden = sourceCardPill\._sourceValues\.length < 2/);
+  assert.match(source, /sourceCardNext\.hidden = sourceCardPill\._sourceValues\.length < 2/);
+  assert.match(source, /google\.com\/s2\/favicons\?domain=/);
+  assert.match(css, /\.source-card[\s\S]*border-radius: 16px/);
+});
+
 test('side panel loads local KaTeX and wires math rendering', async () => {
   const [html, source, katex] = await Promise.all([
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
-    readFile(new URL('sidepanel.js', extensionDirectory), 'utf8'),
+    readUiSource(),
     readFile(new URL('vendor/katex/katex.min.js', extensionDirectory), 'utf8'),
   ]);
   assert.match(html, /href="vendor\/katex\/katex\.min\.css"/);
@@ -501,7 +800,7 @@ test('side panel loads local KaTeX and wires math rendering', async () => {
 });
 
 test('math segmentation supports TeX delimiters while skipping code and currency', async () => {
-  const source = await readFile(new URL('sidepanel.js', extensionDirectory), 'utf8');
+  const source = await readUiSource();
   const start = source.indexOf('const BLOCK_MATH_ENVIRONMENT');
   const end = source.indexOf('function prepareMathMarkdown');
   const context: { segmentMathMarkdown?: (markdown: string) => any[] } = {};
@@ -535,4 +834,51 @@ test('math segmentation supports TeX delimiters while skipping code and currency
       ['\\begin{align}a &= b\\\\c &= d\\end{align}', true],
     ],
   );
+});
+
+test('panel batches streaming renders, exposes stop and jump controls, and backs off reconnects', async () => {
+  const [transcript, composer, sidepanel, html, css, offscreen, background, tabsUi, sessionsUi] = await Promise.all([
+    'transcript.js', 'composer.js', 'sidepanel.js', 'sidepanel.html', 'sidepanel.css', 'offscreen.js', 'background.js', 'tabs-ui.js', 'sessions-ui.js',
+  ].map(name => readFile(new URL(name, extensionDirectory), 'utf8')));
+
+  // Streaming deltas coalesce per animation frame and flush before finish/fail.
+  assert.match(transcript, /scheduleRender\(body\.element, \(\) => renderStreaming\(body, /);
+  assert.match(transcript, /scheduleRender\(thinking\.body,/);
+  assert.match(transcript, /function finishAssistant\(assistant\) \{\s*flushRenders\(\);/);
+  assert.match(transcript, /function failAssistant\(assistant, message\) \{\s*flushRenders\(\);/);
+  assert.match(transcript, /messagesEl\.addEventListener\('scroll'/);
+
+  // Stop and jump-to-latest controls exist and are wired.
+  assert.match(html, /id="stop"/);
+  assert.match(html, /id="jump-latest"/);
+  assert.match(css, /\.stop-btn \{/);
+  assert.match(css, /\.jump-latest \{/);
+  assert.match(composer, /stopEl\.hidden = !busy/);
+  assert.match(sidepanel, /#stop'\)\?\.addEventListener\('click', \(\) => stopActiveAsks\(\)\)/);
+  assert.match(sidepanel, /event\.key === 'Escape' && activeRequests\(\)\.length/);
+
+  // /ask fails fast when the daemon never sends headers.
+  assert.match(composer, /const headerTimeout = setTimeout\(\(\) => controller\.abort\(new Error\(/);
+  assert.match(composer, /clearTimeout\(headerTimeout\)/);
+
+  // Offscreen reconnect uses capped exponential backoff and resets on open.
+  const retry = offscreen.slice(offscreen.indexOf('function retryDelay'), offscreen.indexOf('\nfunction scheduleReconnect'));
+  const delayContext: { Math: typeof Math; retryDelay?: () => number; setFailures?: (n: number) => void } = { Math };
+  runInNewContext(['let failures = 0;', retry, 'globalThis.retryDelay = retryDelay;', 'globalThis.setFailures = n => { failures = n; };'].join('\n'), delayContext);
+  const at = (n: number) => { delayContext.setFailures?.(n); return delayContext.retryDelay?.() ?? -1; };
+  assert.ok(at(0) >= 1000 && at(0) < 1300);
+  assert.ok(at(3) >= 8000 && at(3) < 8300);
+  assert.ok(at(9) >= 30000 && at(9) < 30300);
+  assert.match(offscreen, /nextSocket\.onopen = \(\) => \{\s*if \(!isLive\(\)\) return;\s*failures = 0;/);
+  assert.doesNotMatch(offscreen, /setTimeout\(connect, 2000\)/);
+
+  // Background state publishing is coalesced and deduplicated.
+  assert.match(background, /if \(serialized === lastPublished\) return;/);
+  assert.match(background, /if \(changeInfo\.url \|\| changeInfo\.title \|\| changeInfo\.status === 'complete'\) publishState\(\);/);
+
+  // Reconnect refreshes panel data; the panel reuses an empty session on open.
+  assert.match(tabsUi, /if \(state\.connected && !wasConnected\)/);
+  assert.match(sidepanel, /onDaemonReconnect\(\(\) => \{/);
+  assert.match(sessionsUi, /async function createSession\(\{ reuseEmpty = false \} = \{\}\)/);
+  assert.match(sidepanel, /await createSession\(\{ reuseEmpty: true \}\)/);
 });

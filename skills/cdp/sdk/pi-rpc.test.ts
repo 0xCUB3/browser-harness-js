@@ -83,7 +83,7 @@ test('builds an isolated side-panel Pi spawn for this daemon', t => {
   assert.equal(spawn.env.ASIDE_SKILLS_PATH, undefined);
 });
 
-test('builds title Pi spawns without browser extensions or chat skills', () => {
+test('builds title Pi spawns with a replacement prompt and no browser extensions or chat skills', async () => {
   const spawn = buildTitleSpawn(43210, process.env, 'title-test');
   const sdkDir = dirname(fileURLToPath(import.meta.url));
   const harnessSkills = resolve(process.env.HOME!, '.browser-harness-js', 'skills');
@@ -100,7 +100,8 @@ test('builds title Pi spawns without browser extensions or chat skills', () => {
   assert.ok(!spawn.argv.includes('--skill'));
   assert.ok(!spawn.argv.includes('--extension'));
   assert.ok(!spawn.argv.includes(harnessSkills));
-  assert.equal(spawn.argv[spawn.argv.indexOf('--append-system-prompt') + 1], resolve(sdkDir, 'pi-title-prompt.md'));
+  assert.ok(!spawn.argv.includes('--append-system-prompt'));
+  assert.equal(spawn.argv[spawn.argv.indexOf('--system-prompt') + 1], await readFile(resolve(sdkDir, 'pi-title-prompt.md'), 'utf8'));
 });
 
 test('browser extension keeps normal Pi tools available alongside browser tools', async () => {
