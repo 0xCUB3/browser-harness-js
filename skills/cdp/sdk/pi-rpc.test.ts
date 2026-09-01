@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { readFile } from 'node:fs/promises';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { buildPiSpawn, buildTitleSpawn, PiRpc, type PiEvent } from './pi-rpc.ts';
+import { buildPiSpawn, providerExtensions, buildTitleSpawn, PiRpc, type PiEvent } from './pi-rpc.ts';
 import { PluckSet } from './pluck.ts';
 
 function fakePi(respond: (command: Record<string, unknown>, stdout: PassThrough) => void) {
@@ -71,7 +73,10 @@ test('builds an isolated side-panel Pi spawn for this daemon', t => {
   assert.equal(spawn.argv[spawn.argv.indexOf('--skill') + 1], resolve(process.env.HOME!, '.browser-harness-js', 'skills'));
   assert.equal(spawn.argv[spawn.argv.indexOf('--extension') + 1], resolve(sdkDir, 'pi-browser-extension.ts'));
   const extensionPaths = spawn.argv.flatMap((value, index) => value === '--extension' ? [spawn.argv[index + 1]] : []);
-  assert.ok(extensionPaths.slice(1).every(value => value?.startsWith(resolve(process.env.HOME!, '.browser-harness-js', 'extensions'))));
+  const harnessExtensionDir = resolve(process.env.HOME!, '.browser-harness-js', 'extensions');
+  const providers = new Set(providerExtensions(process.env));
+  assert.ok(extensionPaths.slice(1).every(value => value?.startsWith(harnessExtensionDir) || providers.has(value)));
+  for (const provider of providers) assert.ok(extensionPaths.includes(provider), `missing provider extension ${provider}`);
   assert.equal(spawn.argv[spawn.argv.indexOf('--append-system-prompt') + 1], resolve(sdkDir, 'pi-sidepanel-prompt.md'));
   assert.equal(spawn.env.CDP_REPL_PORT, '43210');
   assert.equal(spawn.env.PATH, process.env.PATH);
@@ -98,7 +103,8 @@ test('builds title Pi spawns with a replacement prompt and no browser extensions
   }
   assert.equal(spawn.argv[spawn.argv.indexOf('--thinking') + 1], 'off');
   assert.ok(!spawn.argv.includes('--skill'));
-  assert.ok(!spawn.argv.includes('--extension'));
+  const titleExtensions = spawn.argv.flatMap((value, index) => value === '--extension' ? [spawn.argv[index + 1]] : []);
+  assert.deepEqual(titleExtensions, providerExtensions(process.env));
   assert.ok(!spawn.argv.includes(harnessSkills));
   assert.ok(!spawn.argv.includes('--append-system-prompt'));
   assert.equal(spawn.argv[spawn.argv.indexOf('--system-prompt') + 1], await readFile(resolve(sdkDir, 'pi-title-prompt.md'), 'utf8'));
@@ -367,4 +373,36 @@ test('maps available models to panel model metadata', async () => {
   assert.deepEqual(await rpc.listModels(), [
     { provider: 'anthropic', id: 'claude-test', name: 'Claude Test' },
   ]);
+});
+
+test('providerExtensions keeps only extensions that register a model provider', () => {
+  const home = mkdtempSync(resolve(tmpdir(), 'harness-providers-'));
+  const agentDir = resolve(home, '.pi', 'agent');
+  mkdirSync(resolve(agentDir, 'extensions', 'surplus'), { recursive: true });
+  mkdirSync(resolve(agentDir, 'npm', 'node_modules', 'pi-prov', 'src'), { recursive: true });
+  mkdirSync(resolve(agentDir, 'npm', 'node_modules', 'pi-tool', 'test'), { recursive: true });
+  mkdirSync(resolve(agentDir, 'git', 'github.com', 'me', 'bundled', 'dist'), { recursive: true });
+  writeFileSync(resolve(agentDir, 'extensions', 'surplus', 'index.ts'), 'export default function (pi) { pi.registerProvider("surplus", {}); }');
+  writeFileSync(resolve(agentDir, 'extensions', 'statusline.ts'), 'export default function (pi) { pi.on("agent_end", () => {}); }');
+  writeFileSync(resolve(agentDir, 'extensions', 'off.ts'), 'export default function (pi) { pi.registerProvider("off", {}); }');
+  writeFileSync(resolve(agentDir, 'npm', 'node_modules', 'pi-prov', 'package.json'), JSON.stringify({ pi: { extensions: ['./src/index.ts'] } }));
+  writeFileSync(resolve(agentDir, 'npm', 'node_modules', 'pi-prov', 'src', 'index.ts'), 'pi.registerProvider("prov", {});');
+  writeFileSync(resolve(agentDir, 'npm', 'node_modules', 'pi-tool', 'package.json'), JSON.stringify({ pi: { extensions: ['./index.ts'] } }));
+  writeFileSync(resolve(agentDir, 'npm', 'node_modules', 'pi-tool', 'index.ts'), 'pi.registerTool({});');
+  writeFileSync(resolve(agentDir, 'npm', 'node_modules', 'pi-tool', 'test', 'fixture.ts'), 'pi.registerProvider("fake", {});');
+  writeFileSync(resolve(agentDir, 'git', 'github.com', 'me', 'bundled', 'package.json'), JSON.stringify({ pi: { extensions: ['./dist/index.js'] } }));
+  writeFileSync(resolve(agentDir, 'git', 'github.com', 'me', 'bundled', 'dist', 'index.js'), 'function x(e){e.registerProvider("b",{})}');
+  writeFileSync(resolve(agentDir, 'settings.json'), JSON.stringify({
+    packages: ['npm:pi-prov', 'npm:pi-tool', 'https://github.com/me/bundled@main', 'npm:missing-pkg'],
+    extensions: ['-extensions/off.ts'],
+  }));
+  const env = { HOME: home } as NodeJS.ProcessEnv;
+  assert.deepEqual(providerExtensions(env), [
+    resolve(agentDir, 'git', 'github.com', 'me', 'bundled'),
+    resolve(agentDir, 'extensions', 'surplus', 'index.ts'),
+    resolve(agentDir, 'npm', 'node_modules', 'pi-prov'),
+  ]);
+  assert.deepEqual(providerExtensions({ ...env, BROWSER_HARNESS_PI_EXTENSIONS: 'none' }), []);
+  assert.equal(providerExtensions({ ...env, BROWSER_HARNESS_PI_EXTENSIONS: 'all' }).length, 5);
+  rmSync(home, { recursive: true, force: true });
 });

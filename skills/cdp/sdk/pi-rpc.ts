@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { basename, dirname, extname, isAbsolute, resolve } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 
@@ -116,6 +116,130 @@ function isolatedPiEnv(port: string | number, parentEnv: NodeJS.ProcessEnv): Nod
   return env;
 }
 
+const DIALOG_UI_METHODS = new Set(['select', 'confirm', 'input', 'editor']);
+const SOURCE_EXTENSIONS = new Set(['.ts', '.js', '.mjs', '.cjs', '.mts', '.cts']);
+const PROVIDER_SCAN_LIMIT = 400;
+
+function piAgentDir(env: NodeJS.ProcessEnv): string {
+  return env.PI_CODING_AGENT_DIR ?? resolve(env.HOME ?? homedir(), '.pi', 'agent');
+}
+
+function readJson(path: string): Record<string, unknown> | undefined {
+  try { return JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>; } catch { return undefined; }
+}
+
+function isDirectory(path: string): boolean {
+  try { return statSync(path).isDirectory(); } catch { return false; }
+}
+
+// Mirror pi's on-disk layout for settings.json package sources.
+function packageDirectory(source: string, agentDir: string, settingsDir: string): string | undefined {
+  if (source.startsWith('npm:')) {
+    const spec = source.slice(4);
+    const name = spec.startsWith('@') ? spec.replace(/(@[^/]+\/[^@]+)@.*/, '$1') : spec.replace(/@.*$/, '');
+    return resolve(agentDir, 'npm', 'node_modules', name);
+  }
+  const git = source.match(/^(?:git:|https?:\/\/|ssh:\/\/(?:[^@]+@)?)([^/:]+)[/:](.+?)(?:\.git)?(?:@[^@]*)?$/);
+  if (git) return resolve(agentDir, 'git', git[1], ...git[2].split('/').slice(0, 2));
+  if (source.startsWith('git@')) {
+    const ssh = source.match(/^git@([^:]+):(.+?)(?:\.git)?(?:@[^@]*)?$/);
+    if (ssh) return resolve(agentDir, 'git', ssh[1], ...ssh[2].split('/').slice(0, 2));
+    return undefined;
+  }
+  return isAbsolute(source) ? source : resolve(settingsDir, source);
+}
+
+// Where pi would actually load extension code from inside a package: the
+// pi.extensions manifest entries, else the conventional extensions/ directory,
+// else the package root. Tests and fixtures never load, so they never count.
+function extensionRoots(pkg: string): string[] {
+  const manifest = readJson(resolve(pkg, 'package.json'));
+  const entries = manifest && typeof manifest.pi === 'object' && manifest.pi && Array.isArray((manifest.pi as { extensions?: unknown }).extensions)
+    ? ((manifest.pi as { extensions: unknown[] }).extensions).filter((value): value is string => typeof value === 'string' && !value.startsWith('!'))
+    : [];
+  if (entries.length) {
+    return entries.map(entry => resolve(pkg, entry.replace(/[*?[{].*$/, ''))).filter(path => existsSync(path));
+  }
+  const conventional = resolve(pkg, 'extensions');
+  if (isDirectory(conventional)) return [conventional];
+  return [pkg];
+}
+
+function mentionsProvider(root: string): boolean {
+  const roots = isDirectory(root) && existsSync(resolve(root, 'package.json')) ? extensionRoots(root) : [root];
+  return roots.some(candidate => isDirectory(candidate) ? scanForProvider(candidate) : fileRegistersProvider(candidate));
+}
+
+function fileRegistersProvider(path: string): boolean {
+  // Bundled output minifies the receiver, so accept any identifier.
+  try { return /\b\w+\.registerProvider\(/.test(readFileSync(path, 'utf8')); } catch { return false; }
+}
+
+function scanForProvider(root: string): boolean {
+  const stack = [root];
+  let scanned = 0;
+  while (stack.length && scanned < PROVIDER_SCAN_LIMIT) {
+    const dir = stack.pop()!;
+    let entries: ReturnType<typeof readdirSync<{ withFileTypes: true }>>;
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const entry of entries) {
+      const path = resolve(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name.startsWith('.') || /^(tests?|__tests__|fixtures?|examples?)$/.test(entry.name)) continue;
+        stack.push(path);
+      } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name)) && !/\.(test|spec)\./.test(entry.name)) {
+        scanned += 1;
+        if (fileRegistersProvider(path)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Extensions from the user's pi setup that register model providers.
+ *
+ * The harness runs pi with `--no-extensions` so tool-shaping extensions do not
+ * change how the side panel agent works, but that also drops providers that
+ * only exist through extensions. This walks settings.json packages and the
+ * global extensions directory and keeps the ones that call registerProvider.
+ * BROWSER_HARNESS_PI_EXTENSIONS=none disables it; =all loads every extension.
+ */
+export function providerExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  const mode = env.BROWSER_HARNESS_PI_EXTENSIONS ?? 'providers';
+  if (mode === 'none') return [];
+  const agentDir = piAgentDir(env);
+  const settings = readJson(resolve(agentDir, 'settings.json')) ?? {};
+  const found = new Set<string>();
+  const keep = (path: string) => { if (mode === 'all' || mentionsProvider(path)) found.add(path); };
+
+  const packages = Array.isArray(settings.packages) ? settings.packages : [];
+  for (const source of packages) {
+    if (typeof source !== 'string') continue;
+    const dir = packageDirectory(source, agentDir, agentDir);
+    if (dir && isDirectory(dir)) keep(dir);
+    else if (dir && existsSync(dir)) keep(dir);
+  }
+
+  const overrides = Array.isArray(settings.extensions) ? settings.extensions.filter((value): value is string => typeof value === 'string') : [];
+  const disabled = new Set(overrides.filter(value => value.startsWith('-')).map(value => resolve(agentDir, value.slice(1))));
+  const extensionsDir = resolve(agentDir, 'extensions');
+  let entries: ReturnType<typeof readdirSync<{ withFileTypes: true }>> = [];
+  try { entries = readdirSync(extensionsDir, { withFileTypes: true }); } catch { /* no global extensions */ }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    const path = resolve(extensionsDir, entry.name);
+    if (entry.isDirectory()) {
+      const entryFile = ['index.ts', 'index.js'].map(name => resolve(path, name)).find(candidate => existsSync(candidate));
+      if (!entryFile || disabled.has(entryFile) || disabled.has(path)) continue;
+      if (mode === 'all' || mentionsProvider(path)) found.add(entryFile);
+    } else if (entry.isFile() && SOURCE_EXTENSIONS.has(extname(entry.name)) && !disabled.has(path)) {
+      if (mode === 'all' || fileRegistersProvider(path)) found.add(path);
+    }
+  }
+  return Array.from(found).sort((a, b) => basename(a).localeCompare(basename(b)));
+}
+
 export function buildPiSpawn(
   port: string | number = process.env.CDP_REPL_PORT ?? 9876,
   parentEnv: NodeJS.ProcessEnv = process.env,
@@ -144,6 +268,7 @@ export function buildPiSpawn(
       '--no-extensions',
       '--extension', resolve(sdkDir, 'pi-browser-extension.ts'),
       ...harnessExtensions.flatMap(extension => ['--extension', extension]),
+      ...providerExtensions(parentEnv).flatMap(extension => ['--extension', extension]),
       '--no-context-files',
       '--no-prompt-templates',
       '--append-system-prompt', resolve(sdkDir, 'pi-sidepanel-prompt.md'),
@@ -168,6 +293,7 @@ export function buildTitleSpawn(
       '--thinking', 'off',
       '--no-skills',
       '--no-extensions',
+      ...providerExtensions(parentEnv).flatMap(extension => ['--extension', extension]),
       '--no-context-files',
       '--no-prompt-templates',
       '--system-prompt', readFileSync(resolve(sdkDir, 'pi-title-prompt.md'), 'utf8'),
@@ -352,6 +478,15 @@ export class PiRpc {
         pending.reject(new Error(typeof event.error === 'string' ? event.error : 'Pi RPC command failed.'));
       } else {
         pending.resolve(event.data);
+      }
+      return;
+    }
+
+    if (event.type === 'extension_ui_request' && typeof event.id === 'string') {
+      // Dialog methods block the agent until answered; nobody is watching this
+      // pi, so cancel them. Fire-and-forget methods (notify, setStatus, ...) need no reply.
+      if (typeof event.method === 'string' && DIALOG_UI_METHODS.has(event.method)) {
+        this.write({ type: 'extension_ui_response', id: event.id, cancelled: true });
       }
       return;
     }
