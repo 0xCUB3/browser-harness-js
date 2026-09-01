@@ -64,6 +64,11 @@ test('connect auto prefers a live extension wire over remote debugging', async (
   assert.equal(session.getTransport(), 'extension');
   const { targetInfos } = await session.domains.Target.getTargets({});
   assert.deepEqual(targetInfos, []);
+  session.setActiveSession('sid-keep');
+  await session._call('Chrome.group', { tabIds: ['1'] });
+  const chromeMsg = JSON.parse(wire.sent.at(-1)!) as { method: string; sessionId?: string };
+  assert.equal(chromeMsg.method, 'Chrome.group');
+  assert.equal(chromeMsg.sessionId, undefined);
   session.close();
   resetExtensionHub();
 });

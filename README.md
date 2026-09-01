@@ -88,6 +88,7 @@ This repo contains nine skills installable via `npx skills add`:
 - `skills/cdp/extension/` — MV3 CDP relay (`chrome.debugger`); preferred `session.connect()` pipe
 - `skills/cdp/sdk/session.ts` — the `Session` class: transport, connect, target routing, events, call observation
 - `skills/cdp/sdk/extension-hub.ts` / `ws-server.ts` — inbound `/extension` WebSocket and connect() preference
+- `skills/cdp/sdk/chrome.ts` — `ext.*` helpers for Chrome tab/window/group commands (extension transport)
 - `skills/cdp/sdk/recording.ts` — consent, pinned rrweb fetch/cache, injection, local replay server
 - `skills/cdp/sdk/rrweb-replay.html` — player UI for `recordings replay`
 - `skills/cdp/sdk/gen.ts` — codegen: reads `browser_protocol.json` + `js_protocol.json` → typed wrappers

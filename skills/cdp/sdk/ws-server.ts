@@ -54,7 +54,7 @@ export function acceptExtensionUpgrade(
 
 class SocketText implements TextSocket {
   private closed = false;
-  private buf = Buffer.alloc(0);
+  private buf: Buffer = Buffer.alloc(0);
   private fragments: Buffer[] = [];
   private fragmentOpcode: number | undefined;
   private messageListeners: Array<(text: string) => void> = [];

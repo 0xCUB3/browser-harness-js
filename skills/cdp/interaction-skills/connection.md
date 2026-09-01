@@ -14,7 +14,21 @@ await session.connect({ transport: 'cdp' })             // skip the extension
 
 `browser-harness-js --status` includes `transport` (`"extension"` | `"cdp"` | `null`) and `extension` (worker attached, even if the session is still on CDP).
 
-The extension emulates browser-level `Target.*` (`createTarget`, `attachToTarget`, `closeTarget`, `getTargets`, `setAutoAttach` / `setDiscoverTargets` as no-op flags plus tab events) and pass-throughs every other domain via `chrome.debugger.sendCommand`. Skills keep the same CDP calls. Limits vs remote debugging: no real `Browser.*` (except a stub `getVersion`), cannot attach to `chrome://` / `devtools://` / other-extension pages, one debugger client per tab (DevTools on that tab blocks attach), and Chrome shows the extension-debugging infobar. Pin `{ transport: 'cdp' }` or `{ profileDir }` when you need the real browser target.
+The extension emulates browser-level `Target.*` (`createTarget`, `attachToTarget`, `closeTarget`, `getTargets`, `setDiscoverTargets`, `setAutoAttach` which attaches every existing attachable tab plus new ones) and maps `Browser.getWindowForTarget` / `getWindowBounds` / `setWindowBounds` through `chrome.windows`. Page/DOM/Runtime/Network/Input/… still go through `chrome.debugger.sendCommand`. Extra `Chrome.*` commands (also `ext.*` in the REPL) cover tab groups, pin/mute/move/discard/reload/duplicate, and windows. `Target.getTargets` includes strip `index`, `windowId`, `groupId`, `pinned`, `muted`, `active`.
+
+OOPIF/worker/service-worker targets come from `chrome.debugger.getTargets()` (UUID `targetId`; pages stay numeric tab ids). `Browser.grantPermissions` / `setPermission` / `resetPermissions` map through `chrome.contentSettings` for geolocation, notifications, mic, camera, and automaticDownloads.
+
+Limits vs remote debugging: remaining `Browser.*` (download behavior, crash/close browser) are unavailable, cannot attach to `chrome://` / `devtools://` / other-extension pages, one debugger client per target (DevTools on that tab blocks attach), and Chrome shows the extension-debugging infobar. Pin `{ transport: 'cdp' }` or `{ profileDir }` when you need the real browser target. Reload the unpacked extension after a permission change (`tabGroups`, `contentSettings`).
+
+```js
+const tabs = await listPageTargets()
+await ext.group({ tabIds: tabs.map(t => t.targetId), createProperties: { windowId: tabs[0].windowId } })
+const { groups } = await ext.getTabGroups()
+await ext.updateTabGroup({ groupId: groups[0].groupId, title: 'search', color: 'blue' })
+await ext.updateTab({ targetId: tabs[0].targetId, pinned: true })
+const { windowId, bounds } = await session.Browser.getWindowForTarget({ targetId: tabs[0].targetId })
+await session.Browser.setWindowBounds({ windowId, bounds: { windowState: 'maximized' } })
+```
 
 Inspect what's available (e.g. to let the user choose) with `detectBrowsers()`:
 

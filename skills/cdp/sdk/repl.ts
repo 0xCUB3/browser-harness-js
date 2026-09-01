@@ -14,6 +14,7 @@
  * the process.
  */
 
+import { bindChrome } from './chrome.ts';
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
 import { asWire, extensionConnected, setExtensionClient } from './extension-hub.ts';
 import { acceptExtensionUpgrade, isExtensionUpgrade } from './ws-server.ts';
@@ -37,6 +38,7 @@ const recording = new RecordingManager(session);
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
 // with no args (no host/port confusion, no /json endpoint assumption).
 (globalThis as any).listPageTargets = () => listPageTargets(session);
+(globalThis as any).ext = bindChrome(session);
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
 (globalThis as any).axView = axView;

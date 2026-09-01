@@ -476,7 +476,7 @@ export class CdpError extends Error {
 
 /** Browser-level methods never take a sessionId. */
 function isBrowserLevel(method: string): boolean {
-  return method.startsWith('Browser.') || method.startsWith('Target.');
+  return method.startsWith('Browser.') || method.startsWith('Target.') || method.startsWith('Chrome.');
 }
 
 /** Best-effort browser name for the Dia-only auto-allow gate. For { profileDir }
@@ -592,7 +592,21 @@ async function readDevToolsActivePort(profileDir: string): Promise<{ port: numbe
  * including those that do not serve /json). Filters out chrome:// and devtools://
  * internals. Requires the session to be connected already.
  */
-export type PageTarget = { targetId: string; title: string; url: string; type: string };
+export type PageTarget = {
+  targetId: string;
+  title: string;
+  url: string;
+  type: string;
+  windowId?: number;
+  index?: number;
+  groupId?: number;
+  pinned?: boolean;
+  muted?: boolean;
+  discarded?: boolean;
+  audible?: boolean;
+  active?: boolean;
+  openerId?: string;
+};
 export async function listPageTargets(session: Session): Promise<PageTarget[]> {
   const { targetInfos } = await session.domains.Target.getTargets({});
   return (targetInfos as PageTarget[]).filter(

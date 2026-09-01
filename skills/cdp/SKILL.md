@@ -81,7 +81,8 @@ Env vars: `CDP_REPL_PORT` (default `9876`; the extension worker hardcodes 9876 �
 These globals are pre-loaded — no imports needed:
 
 - `session` — the persistent `Session`. Has every CDP domain mounted: `session.Page`, `session.DOM`, `session.Runtime`, `session.Network`, … 56 domains, 652 methods total.
-- `listPageTargets()` — list real page targets via CDP's `Target.getTargets` (works on Chrome 144+ too), with `chrome://` and `devtools://` URLs filtered out. No args — uses the connected session.
+- `listPageTargets()` — list real page targets via CDP's `Target.getTargets` (works on Chrome 144+ too), with `chrome://` and `devtools://` URLs filtered out. No args — uses the connected session. Over the extension, entries also include strip `index`, `windowId`, `groupId`, `pinned`, `muted`, `active`.
+- `ext` — Chrome-extension commands (extension transport only): tab groups, pin/mute/move/discard/reload/duplicate, windows. See [connection.md](interaction-skills/connection.md). `session.Browser.getWindowForTarget` / `getWindowBounds` / `setWindowBounds` / `grantPermissions` work over the extension too. OOPIF and worker targets use UUID `targetId`s from `Target.getTargets`.
 - `detectBrowsers()` — scan OS-specific profile dirs for running Chromium-based browsers with remote debugging on. Returns `[{name, profileDir, port, wsPath, wsUrl, mtimeMs}]`, sorted by most recently launched.
 - `resolveWsUrl(opts)` — resolve a WS URL from `{wsUrl}` | `{port, host?}` | `{profileDir}`. For the no-args auto-detect flow, call `session.connect()` directly instead.
 - `CDP` — the generated namespaces (`CDP.Page`, `CDP.Runtime`, …) for type-name reference.
