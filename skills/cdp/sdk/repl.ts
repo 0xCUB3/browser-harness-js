@@ -5,7 +5,8 @@
  *   POST /eval     body = raw JS to evaluate (NOT JSON-wrapped).
  *                  Top-level await supported. Single expression auto-returns.
  *                  Response: {"ok":true,"result":<json>} | {"ok":false,"error":..,"stack"?:..}
- *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"sessionId":<string|null>}
+ *   GET  /health   {"ok":true,"version":<string>,"uptime":<seconds>,"connected":<bool>,"transport":"extension"|"cdp"|null,"extension":<bool>,"sessionId":<string|null>}
+ *   GET  /extension  WebSocket upgrade — MV3 relay (preferred pipe)
  *   POST /quit     graceful shutdown. Returns {"ok":true} then exits.
  *
  * State: `session`, the active sessionId, event subscribers, and any
@@ -13,7 +14,11 @@
  * the process.
  */
 
+import { bindChrome } from './chrome.ts';
 import { Session, listPageTargets, resolveWsUrl, detectBrowsers } from './session.ts';
+import { extensionConnected, setExtensionClient } from './extension-hub.ts';
+import { isExtensionUpgrade } from './ws-server.ts';
+import type { Wire } from './wire.ts';
 import { axView, axDiff, parseAxRefs, parseAxLocators } from './axview.ts';
 import { RecordingManager } from './recording.ts';
 import * as Generated from './generated.ts';
@@ -47,12 +52,12 @@ const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.ur
 
 const session = new Session();
 const recording = new RecordingManager(session);
-session.setCallObserver(recording.observe);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
 // with no args (no host/port confusion, no /json endpoint assumption).
 (globalThis as any).listPageTargets = () => listPageTargets(session);
+(globalThis as any).ext = bindChrome(session);
 (globalThis as any).resolveWsUrl = resolveWsUrl;
 (globalThis as any).detectBrowsers = detectBrowsers;
 (globalThis as any).axView = axView;
@@ -369,6 +374,7 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
   seedMemoryStore(memoryRoot);
   const relay = new ExtensionRelay();
   const browserApi = new BrowserApi(session, () => relay.extensionConnected, axActions);
+  let extensionBridge: Wire | undefined;
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
 
@@ -381,6 +387,8 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
         version: VERSION,
         uptime: Math.floor((Date.now() - startedAt) / 1000),
         connected: session.isConnected(),
+        transport: session.getTransport() ?? null,
+        extension: extensionConnected() || relay.extensionConnected,
         extensionConnected: relay.extensionConnected,
         sessionId: session.getActiveSession() ?? null,
       }));
@@ -870,10 +878,39 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
   });
   server.on('upgrade', (req, socket, head) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
+    const extensionUpgrade = isExtensionUpgrade(req);
     if (!relay.handleUpgrade(url.pathname, req, socket, head)) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+      return;
     }
+    if (!extensionUpgrade) return;
+
+    // The side-panel extension speaks its attach/state protocol to ExtensionRelay.
+    // Register a loopback /cdp peer as the extension-hub client so upstream
+    // Session.connect() waits on the same socket that ultimately reaches it.
+    const address = server.address();
+    if (!address || typeof address !== 'object') return;
+    extensionBridge?.close();
+    const wire = new WebSocket(`ws://127.0.0.1:${address.port}/cdp`) as unknown as Wire;
+    extensionBridge = wire;
+    wire.addEventListener('open', () => {
+      if (!relay.extensionConnected || extensionBridge !== wire) {
+        wire.close();
+        return;
+      }
+      setExtensionClient(wire);
+      session.adoptExtension(wire);
+    });
+    wire.addEventListener('close', () => {
+      if (extensionBridge === wire) extensionBridge = undefined;
+    });
   });
+  const closeServer = server.close.bind(server);
+  server.close = ((callback?: (err?: Error) => void) => {
+    extensionBridge?.close();
+    extensionBridge = undefined;
+    return closeServer(callback);
+  }) as Server['close'];
   return { server, relay, browserApi };
 }
 

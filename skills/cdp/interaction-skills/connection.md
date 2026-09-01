@@ -2,14 +2,34 @@
 
 ## Just call `session.connect()`
 
-No args required. It first probes the Browser Harness extension relay at `127.0.0.1:$CDP_REPL_PORT` (9876 by default). This is the preferred path: click the extension action on an already-open Chrome tab and the same raw CDP API works with its live cookies and login, without a remote-debugging port.
+No args required. **Preferred pipe:** this repo's unpacked `extension/` side-panel relay. It dials `ws://127.0.0.1:9876/extension`; click its action on an already-open Chrome tab and the same raw CDP API works with the tab's live cookies and login, without a remote-debugging port. The side panel chats through `/ask` and can use built-in Ask or a sibling Pi RPC process without changing the CDP transport.
 
-If no extension relay is available, `session.connect()` falls back to the existing detection flow unchanged. It scans OS-specific browser-data dirs for running Chromium browsers, reads each actual debug port from `DevToolsActivePort`, and picks the most-recently-launched candidate whose WebSocket accepts. Explicit `{ wsUrl }`, `{ profileDir }`, or `{ port }` options bypass the extension probe.
+The upstream worker-only relay at `skills/cdp/extension` is an alternative when you need its expanded Chrome tab-group, OOPIF, or `grantPermissions` support. Load only one relay extension at a time because both use `/extension`. The workers default to port 9876; keep their configured port in sync if you set `CDP_REPL_PORT`.
 
-The extension side panel chats through `/ask`. It can use built-in Ask or spawn a sibling Pi RPC process; neither choice changes the CDP relay or `session.connect()`.
+**Fallback:** scan OS-specific browser-data dirs for every running Chromium-based browser and read each actual debug port from `DevToolsActivePort`. The most-recently-launched candidate whose WebSocket accepts wins. No port is assumed, and dead or permission-denied candidates fall through quickly. Explicit `{ wsUrl }`, `{ profileDir }`, or `{ port }` options bypass the extension.
 
 ```js
-await session.connect()
+await session.connect()                                 // extension, then remote-debugging auto-detect
+await session.connect({ transport: 'extension' })       // extension only — no fallback
+await session.connect({ transport: 'cdp' })             // skip the extension
+```
+
+`browser-harness-js --status` includes `transport` (`"extension"` | `"cdp"` | `null`) and `extension` (worker attached, even if the session is still on CDP).
+
+The extension emulates browser-level `Target.*` (`createTarget`, `attachToTarget`, `closeTarget`, `getTargets`, `setDiscoverTargets`, `setAutoAttach` which attaches every existing attachable tab plus new ones) and maps `Browser.getWindowForTarget` / `getWindowBounds` / `setWindowBounds` through `chrome.windows`. Page/DOM/Runtime/Network/Input/… still go through `chrome.debugger.sendCommand`. Extra `Chrome.*` commands (also `ext.*` in the REPL) cover tab groups, pin/mute/move/discard/reload/duplicate, and windows. `Target.getTargets` includes strip `index`, `windowId`, `groupId`, `pinned`, `muted`, `active`.
+
+OOPIF/worker/service-worker targets come from `chrome.debugger.getTargets()` (UUID `targetId`; pages stay numeric tab ids). `Browser.grantPermissions` / `setPermission` / `resetPermissions` map through `chrome.contentSettings` for geolocation, notifications, mic, camera, and automaticDownloads.
+
+Limits vs remote debugging: remaining `Browser.*` (download behavior, crash/close browser) are unavailable, cannot attach to `chrome://` / `devtools://` / other-extension pages, one debugger client per target (DevTools on that tab blocks attach), and Chrome shows the extension-debugging infobar. Pin `{ transport: 'cdp' }` or `{ profileDir }` when you need the real browser target. Reload the unpacked extension after a permission change (`tabGroups`, `contentSettings`).
+
+```js
+const tabs = await listPageTargets()
+await ext.group({ tabIds: tabs.map(t => t.targetId), createProperties: { windowId: tabs[0].windowId } })
+const { groups } = await ext.getTabGroups()
+await ext.updateTabGroup({ groupId: groups[0].groupId, title: 'search', color: 'blue' })
+await ext.updateTab({ targetId: tabs[0].targetId, pinned: true })
+const { windowId, bounds } = await session.Browser.getWindowForTarget({ targetId: tabs[0].targetId })
+await session.Browser.setWindowBounds({ windowId, bounds: { windowState: 'maximized' } })
 ```
 
 Inspect what's available (e.g. to let the user choose) with `detectBrowsers()`:
@@ -25,6 +45,8 @@ Use only when auto-detect picks the wrong browser or you already know the destin
 
 | Form | When |
 |---|---|
+| `{ transport: 'extension' }` | Require the extension; do not fall back to remote debugging. |
+| `{ transport: 'cdp' }` | Skip the extension; remote-debugging auto-detect only. |
 | `{ profileDir }` | Target a specific running browser. Reads its `DevToolsActivePort` directly. OS-agnostic. |
 | `{ wsUrl }` | You already have `ws://…/devtools/browser/<uuid>`. |
 
@@ -149,7 +171,7 @@ Two tells that the daemon is stale:
    ```bash
    browser-harness-js --version      # on-disk files, e.g. 0.2.0
    browser-harness-js --status       # running daemon's boot version
-   # {"ok":true,"version":"0.2.0","uptime":...,"connected":true,"sessionId":"..."}
+   # {"ok":true,"version":"0.11.0","uptime":...,"connected":true,"transport":"extension","extension":true,"sessionId":"..."}
    ```
 
    If `/health` has **no** `version` field (daemon predates versioning) or a **lower** one than `--version`, the daemon is stale.
