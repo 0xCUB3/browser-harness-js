@@ -364,7 +364,7 @@ export class Session implements Transport {
           result,
           durationMs: performance.now() - startedAt,
         }));
-        // Diagnostics may add bounded latency, but a stalled screenshot or disk
+        // Diagnostics may add bounded latency, but a stalled observer
         // must never leave an otherwise successful CDP action unresolved.
         await new Promise<void>(resolveObservation => {
           const timer = setTimeout(resolveObservation, 5_000);

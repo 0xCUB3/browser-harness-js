@@ -70,11 +70,10 @@ EOF
 | `browser-harness-js --stop`     | Graceful shutdown. Drops session state. |
 | `browser-harness-js --restart`  | Stop + start fresh. |
 | `browser-harness-js --logs`     | `tail -f` the server log (`/tmp/browser-harness-js.log`). |
-| `browser-harness-js recordings [--latest\|enable\|disable]` | Show recording status, select the latest trace, or persist local recording consent. |
-| `browser-harness-js video init\|review\|export <recording>` | Prepare, review, and export a concise evidence-based browser video. |
+| `browser-harness-js recordings [--latest\|enable\|disable\|replay [dir]]` | Show recording status, persist local consent, or replay an rrweb recording. |
 | `browser-harness-js --no-auto-allow '<js>'` | Set `session.autoAllow = false` on the daemon, then eval the JS. Opts out of auto-dismissing Dia's "Allow debugging connection?" prompt (on by default, macOS). |
 
-Env vars: `CDP_REPL_PORT` (default `9876`), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORD_IDLE_SECONDS` (automatic recording rollover, default `180`), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
+Env vars: `CDP_REPL_PORT` (default `9876`), `CDP_REPL_LOG` (default `/tmp/browser-harness-js.log`), `CDP_RECORD` (`1`/`0` preference override), `CDP_RECORDINGS_DIR` (storage override), `BROWSER_HARNESS_JS_HOME` (state root, default `~/.browser-harness-js`).
 
 ## API surface inside snippets
 
@@ -94,20 +93,21 @@ These globals are pre-loaded — no imports needed:
 - `listLearnings()` / `learnings(domain, tool?, args?)` — per-site recipe registry over `skills/cdp/learnings/<domain>/manifest.json` (`nodeTools` and `browserTools` declared per manifest). See `learnings/README.md`.
 - `cdp(sessionId, method, params)` — call any CDP method on an **explicit** `sessionId` without touching the active-session pointer: `cdp(sid, 'Page.enable', {})`. The multi-tab primitive: the one-tab-per-call skills route every call this way so concurrent tabs never race `session.use`. Equivalent to `session._call(method, params, { sessionId })`.
 - `session.closeTab(targetId, sessionId?)` — close a tab and detach: `window.close()` on the session, then `Target.closeTarget`. Fire-and-forget in a `finally` (`.catch(() => {})`) so cleanup is guaranteed and never blocks the return. Closes are serialized.
-- `startRecording(name?, title?)` / `stopRecording()` / `recordingStatus()` — consent-based local screenshots and action traces for explanatory videos. Snake-case `start_recording` / `stop_recording` aliases are also available. See `interaction-skills/make-video.md`.
+- `startRecording(name?, title?)` / `stopRecording()` / `recordingStatus()` — consent-based rrweb DOM recording (not screenshots). Snake-case `start_recording` / `stop_recording` aliases are also available. See `interaction-skills/make-video.md`.
 
-### Recordings and videos
+### Recordings
 
-Fresh installs do **not** record. A natural request to record, show, demo, or make a video opts in for that task; ordinary browser work does not. Start before browser work, retain the exact returned directory, and stop only after verifying the outcome:
+Fresh installs do **not** record. A natural request to record, show, demo, or replay opts in for that task; ordinary browser work does not. Connect first, start before the work, retain the exact returned directory, and stop after the outcome:
 
 ```js
+await session.connect()
 const recordingDir = await startRecording('demo', 'Verify the account settings')
-// Use raw Page.* and Input.* calls to perform and verify the task.
+// Drive the page (or let the user). rrweb records DOM mutations in-page.
 await stopRecording()
 return recordingDir
 ```
 
-Recording observes successful raw CDP calls, so it preserves the protocol API instead of replacing it with click/navigation helpers. Use `Input.*` for visible interactions: arbitrary `Runtime.evaluate` expressions such as `element.click()` cannot be classified as action beats. Password text is masked during capture; other typing remains hidden from video compositions unless explicitly reviewed and enabled. Never reenact a completed task to manufacture missing footage. Video review and export must run in a fresh detached Chromium profile, never in the user's interactive browser. Follow [`make-video.md`](interaction-skills/make-video.md) for consent, edit briefs, isolated rendering, full-resolution privacy review, provenance hashes, and verified MP4 export.
+There is no screenshot / edit-brief / MP4 pipeline. Replay with `browser-harness-js recordings replay <dir>`. Input values are masked during capture; the rest of the DOM is stored as-is under `~/.browser-harness-js` and requires consent. Never reenact a completed task to manufacture missing footage. See [`make-video.md`](interaction-skills/make-video.md).
 
 ### Calling a CDP method
 
@@ -133,7 +133,7 @@ const { nodeId } = await session.DOM.querySelector({ nodeId: root.nodeId, select
 
 `interaction-skills/` holds pure-CDP recipes for mechanics that aren't obvious from the method list alone — dropdowns, drag-and-drop, OOPIFs, network waits, screenshots, recording cross-tab user actions, navigating + waiting for load, reading a JSON URL, recording media. The set grows, so **look, don't recall**: when a task isn't a straight method call (a framework that swallows clicks, a shadow-DOM trap, a wait-with-timeout, multi-tab anything), browse before improvising.
 
-Start here for the patterns every skill shares: [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (navigate + wait for load, the one-tab-per-call shape), [`json-navigation.md`](interaction-skills/json-navigation.md) (read a JSON URL), [`media-capture.md`](interaction-skills/media-capture.md) (record `MediaSource` / hook a native API before navigate), [`make-video.md`](interaction-skills/make-video.md) (turn consented action evidence into a short explanatory video).
+Start here for the patterns every skill shares: [`lifecycle-readiness.md`](interaction-skills/lifecycle-readiness.md) (navigate + wait for load, the one-tab-per-call shape), [`json-navigation.md`](interaction-skills/json-navigation.md) (read a JSON URL), [`media-capture.md`](interaction-skills/media-capture.md) (record `MediaSource` / hook a native API before navigate), [`make-video.md`](interaction-skills/make-video.md) (consent-based rrweb recording + replay).
 
 ```bash
 ls /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/interaction-skills/
@@ -332,9 +332,8 @@ All paths are relative to `/Users/monotykamary/VCS/working-remote/open-source/br
 - `sdk/repl.ts` — HTTP server (`node:http` on `127.0.0.1:9876`)
 - `sdk/session.ts` — `Session` class (transport, connect, target routing, events)
 - `sdk/axview.ts` — `axView` / `axDiff` / `parseAxRefs`: compressed accessibility-tree projection + helpers, injected as globals (see `interaction-skills/snapshot.md`)
-- `sdk/recording.ts` — consent preferences, privacy-safe raw-CDP action observation, screenshots, and trace storage
-- `sdk/video.ts` — recording initialization, provenance hashes, edit-brief validation, pacing, and composition compiler
-- `sdk/video-render.ts` / `sdk/video-template.html` — Chromium review renderer, redaction review, WebM capture, verified MP4 export
+- `sdk/recording.ts` — consent preferences, pinned rrweb fetch/cache, injection, event storage, local replay server
+- `sdk/rrweb-replay.html` — local player UI served by `recordings replay`
 - `sdk/generated.ts` — codegen output: every CDP method as a typed wrapper
 - `sdk/gen.ts` — codegen script
 - `sdk/{browser,js}_protocol.json` — upstream protocol (vendored)

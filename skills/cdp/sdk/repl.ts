@@ -29,7 +29,6 @@ const VERSION = JSON.parse(readFileSync(new URL('./package.json', import.meta.ur
 
 const session = new Session();
 const recording = new RecordingManager(session);
-session.setCallObserver(recording.observe);
 (globalThis as any).session = session;
 (globalThis as any).Session = Session;
 // Bind helpers to the singleton session so the agent calls `listPageTargets()`
