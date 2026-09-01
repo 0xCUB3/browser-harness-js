@@ -37,7 +37,13 @@ interesting one.
 
 (The CLI requires [`node`](https://nodejs.org) on PATH — TypeScript type stripping is on by default from Node 23.6. No runtime is auto-installed.)
 
-If Chrome asks you to tick a remote-debugging checkbox, do it — that's how the agent attaches:
+### Attach to an already-open Chrome
+
+Open `chrome://extensions`, enable Developer mode, click **Load unpacked**, and choose this repo's `extension/` directory. Start `browser-harness-js`, then click the Browser Harness action icon on a tab to attach it. The CLI's existing raw CDP API now works against that tab with its live cookies and login, without a remote-debugging port or a copied profile. Click the icon again to detach.
+
+Chrome's yellow “Browser Harness started debugging this browser” infobar is expected while a tab is attached. The extension's side panel chats through the daemon's `/ask` endpoint. It can use built-in Ask or a sibling `pi --mode rpc --no-session` process, while the CDP relay stays harness-agnostic.
+
+The extension relay is preferred. Without the extension, the existing remote-debugging setup remains available:
 
 <img src="docs/setup-remote-debugging.png" alt="Remote debugging setup" width="520" style="border-radius: 12px;" />
 

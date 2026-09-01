@@ -8,9 +8,10 @@ Use **CDP for control** (attach, activate known targets, inspect). Use **UI auto
 // List page targets (filtered; chrome:// / devtools:// dropped)
 const tabs = await listPageTargets()
 
-// Create a new tab and route subsequent calls to it
+// Create, route to, then visibly activate a new tab
 const { targetId } = await session.Target.createTarget({ url: 'https://example.com' })
 await session.use(targetId)
+await session.Target.activateTarget({ targetId })
 
 // Switch: route calls to another existing tab
 await session.use(otherTargetId)
@@ -27,18 +28,19 @@ const { targetInfo } = await session.Target.getTargetInfo({ targetId })
 
 **`session.use` is CDP-side routing; `Target.activateTarget` is Chrome-side focus.** They are independent. If the user expects Chrome to visibly change, call `activateTarget` too.
 
-## Two things `Target.createTarget` quietly gets wrong
+## New-tab recipe
 
-1. **Race: `{ url }` in `createTarget` can resolve before navigation starts.** If you then poll `document.readyState`, you'll see `'complete'` for about:blank and move on. Safer:
-   ```js
-   const { targetId } = await session.Target.createTarget({ url: 'about:blank' })
-   await session.use(targetId)
-   await session.Page.enable()
-   await session.Page.navigate({ url: 'https://example.com' })
-   // now wait for Page.loadEventFired via session.waitFor
-   ```
+Prefer passing the final http(s) URL to `createTarget`, then call `session.use(targetId)` and `Target.activateTarget`. The extension relay waits through the initial about:blank race and makes the returned target usable.
 
-2. **New tab may open behind the active one.** Add `Target.activateTarget` if the user needs to see it.
+Creating about:blank first is also valid, but only navigate after routing succeeds:
+
+```js
+const { targetId } = await session.Target.createTarget({ url: 'about:blank' })
+await session.use(targetId)
+await session.Page.enable()
+await session.Page.navigate({ url: 'https://example.com' })
+await session.Target.activateTarget({ targetId })
+```
 
 ## Visible tab-strip order (platform UI)
 

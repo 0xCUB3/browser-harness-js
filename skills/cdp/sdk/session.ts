@@ -142,6 +142,16 @@ export class Session implements Transport {
       await this.openWs(wsUrl, timeoutMs, { autoAllow: this.autoAllow, name, autoAllowDelayMs });
       return;
     }
+    // The unpacked Browser Harness extension relays the user's already-open
+    // Chrome through the local REPL. Prefer it before profile-based remote
+    // debugging discovery; explicit connect options above still bypass it.
+    const relayWsUrl = await detectExtensionRelay();
+    if (relayWsUrl) {
+      try {
+        await this.openWs(relayWsUrl, timeoutMs);
+        return;
+      } catch { /* stale daemon or relay disappeared; use existing fallback */ }
+    }
     const browsers = await detectBrowsers();
     if (browsers.length === 0) {
       const scanned = getBrowserCandidates().map(c => c.name).join(', ');
@@ -476,6 +486,22 @@ export async function resolveWsUrl(opts: ConnectOptions): Promise<string> {
     );
   }
   throw new Error('resolveWsUrl needs { wsUrl }, { profileDir }, or { port }. For auto-detect, call session.connect() directly.');
+}
+
+async function detectExtensionRelay(): Promise<string | undefined> {
+  const port = Number(process.env.CDP_REPL_PORT ?? 9876);
+  if (!Number.isFinite(port)) return undefined;
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, {
+      signal: AbortSignal.timeout(300),
+    });
+    if (!response.ok) return undefined;
+    const body: any = await response.json();
+    if (body.Browser === 'browser-harness-js-relay' && typeof body.webSocketDebuggerUrl === 'string') {
+      return body.webSocketDebuggerUrl;
+    }
+  } catch { /* daemon absent: normal remote-debugging auto-detect follows */ }
+  return undefined;
 }
 
 async function resolveWsUrlFromPort(port: number, host: string): Promise<string | undefined> {

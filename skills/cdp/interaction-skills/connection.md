@@ -2,7 +2,11 @@
 
 ## Just call `session.connect()`
 
-No args required. It scans OS-specific browser-data dirs for every running Chromium-based browser (Chrome, Chromium, Edge, Brave, Arc, Vivaldi, Opera, Comet, Canary, Dia, Helium, Aside — and any other Chromium fork via a bounded fallback scan), reads each one's actual debug port from its `DevToolsActivePort` file, and picks the most-recently-launched one whose WebSocket accepts. No hardcoded port: Chrome often listens on 9222, but Aside and others use ephemeral ports (e.g. 52860), so auto-detect reads the real port instead of assuming. The host is always loopback (`127.0.0.1`) for a local browser. Dead ports and permission-denied (403) candidates fall through in <100ms each, so the loop is fast.
+No args required. It first probes the Browser Harness extension relay at `127.0.0.1:$CDP_REPL_PORT` (9876 by default). This is the preferred path: click the extension action on an already-open Chrome tab and the same raw CDP API works with its live cookies and login, without a remote-debugging port.
+
+If no extension relay is available, `session.connect()` falls back to the existing detection flow unchanged. It scans OS-specific browser-data dirs for running Chromium browsers, reads each actual debug port from `DevToolsActivePort`, and picks the most-recently-launched candidate whose WebSocket accepts. Explicit `{ wsUrl }`, `{ profileDir }`, or `{ port }` options bypass the extension probe.
+
+The extension side panel chats through `/ask`. It can use built-in Ask or spawn a sibling Pi RPC process; neither choice changes the CDP relay or `session.connect()`.
 
 ```js
 await session.connect()

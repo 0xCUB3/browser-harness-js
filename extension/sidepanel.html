@@ -1,0 +1,230 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Browser Harness</title>
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <link rel="stylesheet" href="sidepanel.css">
+</head>
+<body>
+  <aside id="full-nav" class="full-nav" hidden>
+    <button id="nav-toggle" class="nav-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M14.7 6.3 9 12l5.7 5.7-1.4 1.4L6.2 12l7.1-7.1 1.4 1.4Z"/></svg>
+    </button>
+    <button id="nav-new-chat" class="nav-new-chat" type="button" aria-label="New chat" title="New chat"><span class="nav-new-icon" aria-hidden="true">+</span><span class="nav-label">New chat</span></button>
+    <nav class="nav-primary" aria-label="Browser Harness">
+      <button type="button" data-nav="skills"><span class="nav-label">Skills</span></button>
+      <button type="button" data-nav="memory"><span class="nav-label">Memory</span></button>
+      <button type="button" data-nav="settings"><span class="nav-label">Settings</span></button>
+    </nav>
+    <h2 class="nav-heading">Chats</h2>
+    <div id="full-chats" class="full-chats" role="list"></div>
+  </aside>
+  <main class="panel-main">
+  <button id="nav-expand" class="nav-expand" type="button" aria-label="Expand sidebar" title="Expand sidebar">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="m9.3 6.3 5.7 5.7-5.7 5.7 1.4 1.4 7.1-7.1-7.1-7.1-1.4 1.4Z"/></svg>
+  </button>
+  <section id="view-setup" class="view" hidden>
+    <div class="setup">
+      <h1>Browser Harness</h1>
+      <div id="setup-slot"></div>
+      <button id="continue" class="primary" type="button">Continue</button>
+    </div>
+  </section>
+
+  <section id="view-chat" class="view" hidden>
+    <header class="chat-header">
+      <span id="status" class="status-dot" title="Disconnected"></span>
+      <button id="session-btn" class="session-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span id="session-label">New session</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5H7z"/></svg>
+      </button>
+      <button id="new-session" class="text-btn new-session" type="button">New session</button>
+      <button id="open-full" class="icon-btn open-full" type="button" aria-label="Open chats in a tab" title="Open chats in a tab">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M5 4h6v2H7v11h11v-4h2v6H5V4Zm8 0h7v7h-2V7.4l-7.3 7.3-1.4-1.4L16.6 6H13V4Z"/></svg>
+      </button>
+      <button id="open-settings" class="icon-btn" type="button" aria-label="Settings">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path fill="currentColor" d="M19.14 12.94c.04-.31.06-.63.06-.94s-.02-.63-.06-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.03 7.03 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.49.42l-.36 2.54c-.59.24-1.13.56-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L2.8 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.04.31-.06.63-.06.94s.02.63.06.94L2.92 14.1a.5.5 0 0 0-.12.64l1.92 3.32c.14.24.43.34.69.22l2.39-.96c.5.38 1.04.7 1.63.94l.36 2.54c.05.24.25.42.49.42h3.8c.24 0 .44-.18.49-.42l.36-2.54c.59-.24 1.13-.56 1.63-.94l2.39.96c.26.12.55.02.69-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/>
+        </svg>
+      </button>
+    </header>
+    <p id="banner" class="banner" hidden></p>
+    <div id="messages" class="messages" aria-live="polite">
+      <div id="site-chip-wrap" class="site-chip-wrap" hidden></div>
+    </div>
+    <div class="composer-dock">
+      <div id="pending-chip" class="pending-chip" hidden>
+        <span class="pending-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 7 4.5 11.5 9 16M5 11.5h8.5a5 5 0 0 1 5 5V18"/></svg>
+        </span>
+        <span id="pending-text" class="pending-text"></span>
+        <button id="pending-action" class="pending-action" type="button"></button>
+        <button id="pending-trash" class="pending-trash" type="button" aria-label="Discard pending follow-up" title="Discard">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4l1-2Zm-2 6h10l-.7 11H7.7L7 9Zm3 2v7h1.5v-7H10Zm2.5 0v7H14v-7h-1.5Z"/></svg>
+        </button>
+      </div>
+      <div class="composer">
+        <div id="attachment-previews" class="attachment-previews" hidden></div>
+        <textarea id="prompt" rows="1" placeholder="Ask about this page"></textarea>
+        <div class="composer-bar">
+          <button id="composer-plus" class="composer-plus" type="button" aria-label="Attach files">
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z"/>
+            </svg>
+          </button>
+          <input id="file-input" type="file" multiple hidden>
+          <div id="chat-footer" class="chat-footer" hidden>
+            <button id="model-btn" class="picker-btn" type="button" aria-haspopup="listbox" aria-expanded="false">
+              <span class="picker-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="14" height="14">
+                  <circle cx="12" cy="12" r="1.6" fill="currentColor"/>
+                  <ellipse cx="12" cy="12" rx="8.5" ry="3.3" fill="none" stroke="currentColor" stroke-width="1.3"/>
+                  <ellipse cx="12" cy="12" rx="8.5" ry="3.3" fill="none" stroke="currentColor" stroke-width="1.3" transform="rotate(60 12 12)"/>
+                  <ellipse cx="12" cy="12" rx="8.5" ry="3.3" fill="none" stroke="currentColor" stroke-width="1.3" transform="rotate(-60 12 12)"/>
+                </svg>
+              </span>
+              <span id="model-label" class="picker-label">Model</span>
+              <svg class="picker-caret" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <path fill="currentColor" d="M7 10l5 5 5-5H7z"/>
+              </svg>
+            </button>
+            <button id="thinking-btn" class="picker-btn" type="button" hidden aria-haspopup="listbox" aria-expanded="false">
+              <span id="thinking-label" class="picker-label">Off</span>
+              <svg class="picker-caret" viewBox="0 0 24 24" width="12" height="12" aria-hidden="true">
+                <path fill="currentColor" d="M7 10l5 5 5-5H7z"/>
+              </svg>
+            </button>
+          </div>
+          <div class="send-split">
+            <button id="send" class="send-btn" type="button" disabled aria-label="Send" title="Send">
+              <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                <path fill="currentColor" d="M3.2 11.2 20.1 3.4c.7-.3 1.4.4 1.1 1.1l-7.8 16.9c-.3.8-1.5.7-1.7-.1L9.4 14.8 3.3 12.9c-.8-.2-.7-1.4-.1-1.7zm6.9 2.3 7.8-8.6-5.8 10.8-2-2.2z"/>
+              </svg>
+            </button>
+            <button id="send-menu-toggle" class="send-menu-toggle" type="button" aria-label="Choose send action" title="Choose send action" aria-haspopup="menu" aria-expanded="false">
+              <svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true">
+                <path fill="currentColor" d="M7 9l5 6 5-6H7z"/>
+              </svg>
+            </button>
+            <div id="send-menu" class="send-menu" role="menu" hidden>
+              <button type="button" role="menuitem" data-action="queue">Queue</button>
+              <button type="button" role="menuitem" data-action="steer">Steer</button>
+              <button type="button" role="menuitem" data-action="now">Send now</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-settings" class="view" hidden>
+    <header class="settings-header">
+      <strong>Settings</strong>
+      <button id="done" class="text-btn" type="button">Done</button>
+    </header>
+    <div class="settings-body">
+      <div id="settings-slot"></div>
+      <div class="section-title">
+        <h2>Tabs</h2>
+        <button id="attach-all" type="button">Attach all</button>
+      </div>
+      <div id="tabs" class="tabs"></div>
+      <p id="runtime-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <section id="view-skills" class="view full-editor-view" hidden>
+    <header class="settings-header">
+      <strong>Skills</strong>
+      <button id="new-skill-toggle" class="text-btn" type="button">New skill</button>
+    </header>
+    <div class="full-editor-body skills-layout">
+      <div class="skills-sidebar">
+        <form id="new-skill-form" class="new-skill-form" hidden>
+          <label>Name<input id="skill-name" required pattern="[a-z0-9][a-z0-9-]{0,63}" placeholder="my-skill"></label>
+          <label>Description<input id="skill-description" required placeholder="When this skill should be used"></label>
+          <button class="primary" type="submit">Create</button>
+        </form>
+        <div id="skills-list" class="skills-list"></div>
+      </div>
+      <div class="editor-pane">
+        <p id="skill-empty" class="editor-empty">Select a skill to edit its SKILL.md.</p>
+        <div id="skill-editor" class="editor-form" hidden>
+          <label for="skill-text">SKILL.md</label>
+          <textarea id="skill-text" spellcheck="false"></textarea>
+          <button id="save-skill" class="primary save-editor" type="button">Save</button>
+        </div>
+        <p id="skills-error" class="error" hidden></p>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-memory" class="view full-editor-view" hidden>
+    <header class="settings-header"><strong>Memory</strong></header>
+    <div class="full-editor-body memory-layout">
+      <aside class="memory-sidebar">
+        <h2>Files</h2>
+        <div id="memory-files" class="memory-files"></div>
+      </aside>
+      <div class="memory-editor">
+        <label id="memory-file-label" for="memory-text">MEMORY.md</label>
+        <textarea id="memory-text" spellcheck="false" placeholder="Durable preferences for Browser Harness"></textarea>
+        <button id="save-memory" class="primary save-editor" type="button">Save</button>
+        <p id="memory-error" class="error" hidden></p>
+      </div>
+      <aside class="memory-history-pane">
+        <h2>History</h2>
+        <div id="memory-history" class="memory-history"></div>
+      </aside>
+    </div>
+  </section>
+
+  <div id="config" class="config" hidden>
+    <label class="field">
+      <span>Daemon port</span>
+      <input id="port" type="number" min="1" max="65535" value="9876" autocomplete="off">
+    </label>
+    <div class="field">
+      <span>Harness</span>
+      <div class="segmented" role="radiogroup" aria-label="Harness">
+        <label><input type="radio" name="harness" value="pi" checked> Pi</label>
+        <label><input type="radio" name="harness" value="ask"> Ask</label>
+      </div>
+    </div>
+    <div class="field">
+      <span>Model</span>
+      <button id="settings-model-btn" class="settings-picker" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span id="settings-model-label">Model</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5H7z"/></svg>
+      </button>
+    </div>
+    <div class="field">
+      <span>Titles</span>
+      <button id="title-model-btn" class="settings-picker" type="button" aria-haspopup="listbox" aria-expanded="false">
+        <span id="title-model-label">Same as chat</span>
+        <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M7 10l5 5 5-5H7z"/></svg>
+      </button>
+    </div>
+    <div class="field">
+      <span>When a reply is already running</span>
+      <div class="segmented busy-send-segmented" role="radiogroup" aria-label="Send action when a reply is already running">
+        <label><input type="radio" name="busySend" value="queue" checked> Queue</label>
+        <label><input type="radio" name="busySend" value="steer"> Steer</label>
+        <label><input type="radio" name="busySend" value="now"> Send now</label>
+      </div>
+    </div>
+    <p id="config-error" class="error" hidden></p>
+  </div>
+
+  <div id="popover" class="popover" hidden>
+    <input id="popover-filter" class="popover-filter" type="search" placeholder="Filter models" autocomplete="off" hidden>
+    <div id="popover-list" class="popover-list" role="listbox"></div>
+  </div>
+
+  </main>
+  <script src="vendor/katex/katex.min.js"></script>
+  <script type="module" src="sidepanel.js"></script>
+</body>
+</html>

@@ -6,6 +6,8 @@ every round trip is a tool call in the model context. Multi-step tasks finish
 faster and with fewer tokens when you compose the round **in one heredoc**:
 observe, act, verify, return.
 
+For horizon tasks, use the session's `pluck` working set before the loop grows: pin the current tab or a small interactive AX slice, act from that context, then verify with `axDiff`. Keep the cards compact instead of carrying full accessibility trees across turns.
+
 The `browser-harness-js <<'EOF' … EOF` heredoc IS the composition primitive.
 The shared WebSocket, the persistent `session`, and the per-call `sessionId`
 make these heredocs safe to run in parallel — so when the task fits in one

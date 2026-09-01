@@ -11,7 +11,7 @@ description: >-
   existing browser or launch a new one with --remote-debugging-port.
 setup: bash /Users/monotykamary/VCS/working-remote/open-source/browser-harness-js/skills/cdp/scripts/setup
 compatibility: >-
-  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and a Chromium-based browser with remote debugging (chrome://inspect or --remote-debugging-port).
+  Requires `node` on PATH (the REPL server is Node-native — TypeScript type stripping from Node 23.6) and either the Browser Harness Chrome extension or a Chromium-based browser with remote debugging.
 ---
 
 # CDP — `browser-harness-js` skill
@@ -163,9 +163,13 @@ return axView(ax, { interactive: true })
 
 Use DOM queries (`DOM.querySelector`, `Runtime.evaluate` with `querySelector`) for structural context, when the tree returns nothing (canvas, non-semantic divs), or when you already have a stable selector. Full guides: [`accessibility-tree.md`](interaction-skills/accessibility-tree.md) (queryAXTree) and [`snapshot.md`](interaction-skills/snapshot.md) (axView).
 
+### Chrome extension relay
+
+The unpacked `extension/` attaches raw `chrome.debugger` sessions from the action icon and relays them through the REPL's `/cdp` WebSocket. The side panel's Ask composer sends `POST /ask`; the daemon streams `progress`, `answer`, or `error` events as `text/event-stream`. Keep using `session.Page.*`, `session.Runtime.*`, `listPageTargets()`, and `session.use()` exactly as before.
+
 ### Connecting
 
-**Preferred: just call `session.connect()` with no args.** It auto-detects the browser, the port, and the host — no hardcoded port to keep in sync, no guessing which browser. Always try this first:
+**Preferred: just call `session.connect()` with no args.** It first tries the Browser Harness extension relay on the local REPL port, which attaches to already-open Chrome tabs with their live login state and needs no remote-debugging flag. If the relay is unavailable, the existing browser profile auto-detection runs unchanged. Always try this first:
 
 ```js
 await session.connect()   // auto-detect: browser + port + host (loopback)

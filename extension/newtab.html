@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>New Tab</title>
+  <link rel="stylesheet" href="newtab.css">
+</head>
+<body>
+  <main class="newtab-shell">
+    <section class="search-area" aria-label="Search or ask Browser Harness">
+      <img class="brand-mark" src="icons/gray128.png" alt="Browser Harness">
+      <form id="search-form" class="search-pill">
+        <input id="query" type="text" autocomplete="off" autofocus placeholder="Search or type a URL" aria-label="Search or type a URL">
+        <div class="mode-controls">
+          <span class="tab-hint" aria-label="Tab to switch"><kbd>Tab</kbd> to switch</span>
+          <div class="mode-switch" role="group" aria-label="Input mode">
+            <button id="search-mode" class="active" type="button" aria-pressed="true">Search</button>
+            <button id="ask-mode" type="button" aria-pressed="false">Ask</button>
+          </div>
+        </div>
+      </form>
+      <p id="status" class="status" role="status" hidden></p>
+    </section>
+
+    <section class="chats" aria-labelledby="chats-heading">
+      <div class="chats-heading-row">
+        <h1 id="chats-heading">Chats</h1>
+      </div>
+      <div id="chat-cards" class="chat-cards"></div>
+      <p id="chats-empty" class="chats-empty" hidden>No recent chats yet.</p>
+    </section>
+  </main>
+  <script src="newtab.js"></script>
+</body>
+</html>

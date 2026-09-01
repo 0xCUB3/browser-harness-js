@@ -1,6 +1,8 @@
 node_modules/
 /tmp/browser-harness-js.log
 .DS_Store
+tmp-screenshots/
+skills/cdp/sdk/.pi/
 
 # Re-include the project's own Claude Code plugin manifest; the global
 # ~/.gitignore_global rule ".claude*" hides .claude-plugin/ but this file
