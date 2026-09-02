@@ -5,15 +5,40 @@ let stopped = false;
 let daemonPort = 9876;
 let failures = 0;
 
-chrome.runtime.onMessage.addListener(message => {
+function isOpen() {
+  return socket?.readyState === WebSocket.OPEN;
+}
+
+function isConnecting() {
+  return socket?.readyState === WebSocket.CONNECTING;
+}
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.destination !== 'offscreen') return;
-  if (message.type === 'send' && socket?.readyState === WebSocket.OPEN) {
+  if (message.type === 'send' && isOpen()) {
     socket.send(JSON.stringify(message.payload));
+    return;
+  }
+  if (message.type === 'status') {
+    sendResponse({ connected: isOpen() });
+    return true;
   }
   if (message.type === 'reconnect') {
-    daemonPort = message.daemonPort ?? 9876;
+    const nextPort = message.daemonPort ?? 9876;
+    const samePort = nextPort === daemonPort;
+    daemonPort = nextPort;
     failures = 0;
+    // A restarted service worker asks us to reconnect even when the socket is
+    // still live. Replacing it is what made the panel flicker "daemon is not
+    // running" while the daemon was up.
+    if (samePort && (isOpen() || isConnecting())) {
+      sendResponse({ connected: isOpen() });
+      if (isOpen()) chrome.runtime.sendMessage({ source: 'offscreen', type: 'connected' });
+      return true;
+    }
     connect();
+    sendResponse({ connected: false });
+    return true;
   }
 });
 

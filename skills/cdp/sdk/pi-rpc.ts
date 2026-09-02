@@ -10,7 +10,7 @@ export type PiImage = { mimeType: string; data: string };
 export type PiEvent =
   | { type: 'delta' | 'answer' | 'thinking'; message: string }
   | { type: 'thinking_end' }
-  | { type: 'tool'; id: string; name: string; phase: 'start' | 'update' | 'end'; args?: unknown; detail?: string; results?: ToolResult[] };
+  | { type: 'tool'; id: string; name: string; phase: 'start' | 'update' | 'end'; args?: unknown; detail?: string; results?: ToolResult[]; images?: PiImage[] };
 
 export type ToolResult = { title: string; url: string };
 
@@ -19,6 +19,21 @@ const RESULT_LIMIT = 8;
 
 function truncateDetail(value: string): string {
   return value.length <= DETAIL_LIMIT ? value : `${value.slice(0, DETAIL_LIMIT - 1)}…`;
+}
+
+function eventImages(value: unknown): PiImage[] {
+  if (!value || typeof value !== 'object') return [];
+  const content = (value as { content?: unknown }).content;
+  if (!Array.isArray(content)) return [];
+  const images: PiImage[] = [];
+  for (const part of content) {
+    if (!part || typeof part !== 'object') continue;
+    const record = part as Record<string, unknown>;
+    if (record.type === 'image' && typeof record.data === 'string' && typeof record.mimeType === 'string' && record.mimeType.startsWith('image/')) {
+      images.push({ data: record.data, mimeType: record.mimeType });
+    }
+  }
+  return images;
 }
 
 function eventResults(value: unknown): ToolResult[] {
@@ -72,6 +87,9 @@ function eventDetail(value: unknown): string | undefined {
           : [])
         .join('\n');
       if (text) return truncateDetail(text);
+      if (record.content.some(part => part && typeof part === 'object' && (part as { type?: unknown }).type === 'image')) {
+        return 'screenshot';
+      }
     }
   }
   try {
@@ -516,6 +534,7 @@ export class PiRpc {
       const detailSource = phase === 'end' ? event.result : phase === 'update' && event.partialResult !== undefined ? event.partialResult : args;
       const detail = eventDetail(detailSource);
       const results = eventResults(detailSource);
+      const images = phase === 'end' ? eventImages(detailSource) : [];
       this.activePrompt.onEvent({
         type: 'tool',
         id,
@@ -524,6 +543,7 @@ export class PiRpc {
         ...(args !== undefined ? { args } : {}),
         ...(detail !== undefined ? { detail } : {}),
         ...(results.length ? { results } : {}),
+        ...(images.length ? { images } : {}),
       });
       return;
     }

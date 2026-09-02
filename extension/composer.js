@@ -2,7 +2,7 @@ import { attachmentPreviews, composerEl, fileInput, pendingAction, pendingChip, 
 import { currentHarness, settings } from './state.js';
 import { applyFallbackSessionTitle, createSession, requestSessionTitle, sessionId } from './sessions-ui.js';
 import { addError, addUser, applySseBlock, failAssistant, finishAssistant, startAssistant } from './transcript.js';
-import { targetId } from './tabs-ui.js';
+import { currentHttpTab, pinTarget, setPinnedTabId, targetId } from './tabs-ui.js';
 import { isModel } from './pickers.js';
 import { showView } from './views.js';
 
@@ -170,7 +170,8 @@ async function sendAsk(overrideAction) {
   renderAttachments();
   updateSend();
 
-  const item = { prompt, displayPrompt: typedPrompt, attachments: sendingAttachments, sessionId, action };
+  const tab = currentHttpTab();
+  const item = { prompt, displayPrompt: typedPrompt, attachments: sendingAttachments, sessionId, action, tabId: tab?.tabId, targetId: targetId() };
   if (action === 'queue' || action === 'steer') {
     setPending(item);
     return;
@@ -219,7 +220,7 @@ function discardPending() {
 }
 
 async function sendPendingSteer() {
-  const index = queuedAsks.findIndex(item => item.sessionId === sessionId && item.action === 'steer');
+  const index = queuedAsks.findIndex(item => item.sessionId === sessionId);
   if (index < 0) return;
   const item = queuedAsks.splice(index, 1)[0];
   item.userTurn = addUser(item.displayPrompt, item.attachments);
@@ -235,12 +236,27 @@ async function sendPendingSteer() {
   }
 }
 
+function pinAskTab(item) {
+  if (typeof item?.tabId === 'number') setPinnedTabId(item.tabId);
+  else if (item?.targetId) pinTarget(item.targetId);
+  const tabId = typeof item?.tabId === 'number' ? item.tabId : currentHttpTab()?.tabId;
+  chrome.runtime.sendMessage({ type: 'setAskBusy', busy: true, tabId }).catch(() => {});
+}
+
+function clearAskTabIfIdle() {
+  if (inFlightAsks.size > 0) return;
+  setPinnedTabId(null);
+  chrome.runtime.sendMessage({ type: 'setAskBusy', busy: false }).catch(() => {});
+}
+
 function startAsk(item) {
   const controller = new AbortController();
   const request = { controller, done: null, sessionId: item.sessionId };
   inFlightAsks.add(request);
+  pinAskTab(item);
   request.done = performAsk(item, controller).finally(() => {
     inFlightAsks.delete(request);
+    clearAskTabIfIdle();
     updateSend();
     if (request.sessionId === sessionId) promptEl.focus();
     drainQueue();
@@ -319,7 +335,52 @@ async function performAsk(item, controller) {
 }
 
 function stopActiveAsks() {
+  const id = sessionId;
   for (const request of activeRequests()) request.controller.abort();
+  if (!id) return;
+  void fetch(`http://127.0.0.1:${settings.daemonPort}/sessions/${encodeURIComponent(id)}/abort`, { method: 'POST' }).catch(() => {});
 }
 
-export { inFlightAsks, activeRequests, updateSend, autosize, attachFiles, renderAttachments, sendAsk, renderPending, discardPending, sendPendingSteer, startAsk, drainQueue, performAsk, consumePendingNewTabAsk, stopActiveAsks };
+async function resumeAskStream(id) {
+  if (!id || Array.from(inFlightAsks).some(request => request.sessionId === id)) return;
+  const controller = new AbortController();
+  const request = { controller, done: null, sessionId: id };
+  inFlightAsks.add(request);
+  updateSend();
+  request.done = (async () => {
+    try {
+      const response = await fetch(`http://127.0.0.1:${settings.daemonPort}/sessions/${encodeURIComponent(id)}/events`, { signal: controller.signal });
+      if (response.status === 204 || !response.ok || !response.body) return;
+      try {
+        const health = await fetch(`http://127.0.0.1:${settings.daemonPort}/health`).then(response => response.json());
+        if (typeof health?.busyTargetId === 'string') pinTarget(health.busyTargetId);
+      } catch { /* daemon may be restarting */ }
+      chrome.runtime.sendMessage({ type: 'setAskBusy', busy: true }).catch(() => {});
+      const assistant = startAssistant();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += decoder.decode(value, { stream: !done });
+        const blocks = buffer.split('\n\n');
+        buffer = blocks.pop() || '';
+        for (const block of blocks) applySseBlock(block, assistant);
+        if (done) {
+          if (buffer.trim()) applySseBlock(buffer, assistant);
+          break;
+        }
+      }
+      finishAssistant(assistant);
+    } catch (error) {
+      if (error?.name === 'AbortError' || controller.signal.aborted) return;
+    } finally {
+      inFlightAsks.delete(request);
+      clearAskTabIfIdle();
+      updateSend();
+    }
+  })();
+  return request.done;
+}
+
+export { inFlightAsks, activeRequests, updateSend, autosize, attachFiles, renderAttachments, sendAsk, renderPending, discardPending, sendPendingSteer, startAsk, drainQueue, performAsk, consumePendingNewTabAsk, stopActiveAsks, resumeAskStream };

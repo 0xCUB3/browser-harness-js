@@ -1,6 +1,6 @@
 import { ICONS, messagesEl } from './dom.js';
 import { addSourceCatalog } from './sources.js';
-import { currentHttpTab, hostOf } from './tabs-ui.js';
+import { agentTab, hostOf, pinTarget } from './tabs-ui.js';
 import { renderMarkdown } from './markdown.js';
 
 let followBottom = true;
@@ -278,6 +278,10 @@ function applySseBlock(block, assistant) {
   if (!line) return;
   let event;
   try { event = JSON.parse(line.slice(6)); } catch { return; }
+  if (event.type === 'target') {
+    pinTarget(event.targetId);
+    return;
+  }
   if (event.type !== 'thinking' && event.type !== 'thinking_end') endThinking(assistant);
   if (event.type === 'status' || event.type === 'progress') {
     if (assistant.hasTrace || assistant.bodyText) return;
@@ -397,6 +401,7 @@ function toolKind(name) {
   const value = String(name || '').toLowerCase();
   if (/memory/.test(value)) return 'memory';
   if (/search|gsearch|rsearch|web_search/.test(value)) return 'search';
+  if (/screenshot|capture/.test(value)) return 'inspect';
   if (/inspect|snapshot|ax|accessibility/.test(value)) return 'inspect';
   if (/read|landing|get_page|dom/.test(value)) return 'read';
   if (/fetch|http|curl|request/.test(value)) return 'fetch';
@@ -422,7 +427,7 @@ function searchQuery(args, detail) {
 }
 
 function siteHint() {
-  const tab = currentHttpTab();
+  const tab = agentTab();
   if (!tab) return '';
   const host = hostOf(tab.url).replace(/^www\./, '');
   return host || '';
@@ -439,6 +444,7 @@ function toolLabel(name, phase, args, detail) {
     const q = query ? `"${query}"` : '';
     return busy ? `Searching${q ? ` ${q}` : '…'}` : `Searched${q ? ` ${q}` : ''}`;
   }
+  if (/screenshot/.test(String(name || ''))) return busy ? `Looking${hint ? ` at ${hint}` : '…'}` : `Looked${hint ? ` at ${hint}` : ''}`;
   if (kind === 'inspect') return busy ? `Inspecting${hint ? ` ${hint}` : '…'}` : `Inspected${hint ? ` ${hint}` : ''}`;
   if (kind === 'read') return busy ? `Reading${hint ? ` ${hint}` : '…'}` : `Read${hint ? ` ${hint}` : ''}`;
   if (kind === 'fetch') return busy ? `Fetching${host || hint ? ` ${host || hint}` : '…'}` : `Fetched${host || hint ? ` ${host || hint}` : ''}`;
@@ -544,7 +550,7 @@ function upsertTool(assistant, event, toolsEl, id = toolEventId(assistant, event
       block.classList.toggle('expanded');
     });
     toolsEl.append(block);
-    row = { block, button, icon, label, caret, card, chips, toolsEl, name: '', phase: 'start', args: undefined, detail: undefined, results: undefined };
+    row = { block, button, icon, label, caret, card, chips, toolsEl, name: '', phase: 'start', args: undefined, detail: undefined, results: undefined, images: undefined };
     assistant.tools.set(id, row);
   }
   if (typeof event.name === 'string' && event.name) row.name = event.name;
@@ -553,6 +559,7 @@ function upsertTool(assistant, event, toolsEl, id = toolEventId(assistant, event
   if (event.detail !== undefined) row.detail = event.detail;
   if (Array.isArray(event.results)) row.results = event.results;
   if (Array.isArray(event.resultItems)) row.results = event.resultItems;
+  if (Array.isArray(event.images)) row.images = event.images;
   const kind = toolKind(row.name);
   setIcon(row.icon, ICONS[kind] || ICONS.search);
   row.label.textContent = toolLabel(row.name, row.phase, row.args, row.detail);
@@ -563,6 +570,15 @@ function upsertTool(assistant, event, toolsEl, id = toolEventId(assistant, event
   const chips = kind === 'memory' ? memoryChips(typeof row.detail === 'string' ? row.detail : '') : [];
   addSourceCatalog(assistant.sourceCatalog, results);
   row.card.replaceChildren();
+  const shots = Array.isArray(row.images) ? row.images : [];
+  for (const image of shots) {
+    if (!image || typeof image.data !== 'string' || typeof image.mimeType !== 'string') continue;
+    const img = document.createElement('img');
+    img.className = 'tool-shot';
+    img.src = `data:${image.mimeType};base64,${image.data}`;
+    img.alt = 'Screenshot';
+    row.card.append(img);
+  }
   for (const item of results) {
     const link = document.createElement('a');
     link.className = 'result-row';
@@ -591,10 +607,11 @@ function upsertTool(assistant, event, toolsEl, id = toolEventId(assistant, event
     chip.textContent = text;
     row.chips.append(chip);
   }
-  const expandable = results.length > 0 || chips.length > 0;
+  const expandable = results.length > 0 || chips.length > 0 || shots.length > 0;
   row.caret.hidden = !expandable;
   row.button.disabled = !expandable;
   if (kind === 'search' && results.length && row.phase === 'end') row.block.classList.add('expanded');
+  if (shots.length && row.phase === 'end') row.block.classList.add('expanded');
 }
 
 function appendTurnActions(assistant) {

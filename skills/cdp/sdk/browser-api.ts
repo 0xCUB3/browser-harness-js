@@ -11,7 +11,19 @@ export const BROWSER_PATHS = [
   '/browser/type',
   '/browser/press',
   '/browser/eval',
+  '/browser/screenshot',
+  '/browser/fill',
 ] as const;
+
+function samePageUrl(left: string, right: string): boolean {
+  try {
+    const a = new URL(left);
+    const b = new URL(right);
+    return a.origin === b.origin && a.pathname.replace(/\/$/, '') === b.pathname.replace(/\/$/, '');
+  } catch {
+    return left === right;
+  }
+}
 
 const BROWSER_PATH_SET = new Set<string>(BROWSER_PATHS);
 const JSON_HEADERS = {
@@ -30,10 +42,12 @@ type TypeLanding = {
   tagName: string;
   preview: string;
   matchesTarget: boolean;
+  length?: number;
 };
 type AxActions = {
   click(ref: number | string, refs?: Map<number, number> | string | null): Promise<void>;
   type(ref: number | string, refs: Map<number, number> | string | null | undefined, text: string): Promise<TypeLanding>;
+  fill(ref: number | string, refs: Map<number, number> | string | null | undefined, text: string): Promise<TypeLanding>;
 };
 
 function resolveAxBackendId(ref: number | string, refs: Map<number, number> | string): number {
@@ -113,11 +127,38 @@ export function createAxActions(
       }).catch(() => undefined) as { result?: { value?: TypeLanding } } | undefined;
       return active?.result?.value ?? { tagName: '', preview: '', matchesTarget: false };
     },
+    async fill(ref, refs, text): Promise<TypeLanding> {
+      const backendNodeId = await backendId(ref, refs);
+      const objectId = await resolveObjectId(backendNodeId);
+      if (!objectId) throw new Error('Could not resolve the field to fill');
+      const landing = await session.domains.Runtime.callFunctionOn({
+        objectId,
+        functionDeclaration: `function(value) {
+          if (!('value' in this)) throw new Error('Not a text field');
+          this.focus();
+          this.value = value;
+          this.dispatchEvent(new Event('input', { bubbles: true }));
+          this.dispatchEvent(new Event('change', { bubbles: true }));
+          const next = String(this.value ?? '');
+          return {
+            tagName: this.tagName || '',
+            preview: next.replace(/\\s+/g, ' ').trim().slice(0, 120),
+            matchesTarget: true,
+            length: next.length,
+          };
+        }`,
+        arguments: [{ value: text }],
+        returnByValue: true,
+      }) as { result?: { value?: TypeLanding }; exceptionDetails?: { text?: string } };
+      if (landing.exceptionDetails) throw new Error(landing.exceptionDetails.text || 'Fill failed');
+      return landing.result?.value ?? { tagName: '', preview: '', matchesTarget: false, length: 0 };
+    },
   };
 }
 
 export class BrowserApi {
   private currentTargetId: string | undefined;
+  private targetListener: ((info: { targetId: string }) => void) | undefined;
   private readonly snapshots = new Map<string, string>();
   private readonly actions: AxActions;
   private readonly session: Session;
@@ -135,8 +176,22 @@ export class BrowserApi {
     this.actions = actions;
   }
 
+  currentTarget(): string | undefined {
+    return this.currentTargetId;
+  }
+
+  onTarget(listener: ((info: { targetId: string }) => void) | undefined): void {
+    this.targetListener = listener;
+  }
+
   noteTarget(targetId: string): void {
     this.currentTargetId = targetId;
+    this.emitTarget();
+  }
+
+  private emitTarget(): void {
+    if (!this.currentTargetId) return;
+    this.targetListener?.({ targetId: this.currentTargetId });
   }
 
   async beginTask(): Promise<BrowserTask> {
@@ -154,9 +209,7 @@ export class BrowserApi {
   endTask(task: BrowserTask): void {
     if (this.activeTask !== task) return;
     this.activeTask = undefined;
-    for (const [targetId, sessionId] of task.tabs) {
-      void this.session.closeTab(targetId, sessionId).catch(() => {});
-    }
+    task.tabs.clear();
     task.release();
   }
 
@@ -171,6 +224,7 @@ export class BrowserApi {
     await this.session.connect();
     await this.session.use(targetId);
     this.currentTargetId = targetId;
+    this.emitTarget();
     return { ok: true, targetId };
   }
 
@@ -178,12 +232,37 @@ export class BrowserApi {
     this.requireExtension();
     if (!/^https?:\/\//i.test(url) && url !== 'about:blank') throw new Error('Browser URL must be http(s) or about:blank');
     await this.session.connect();
+    const reuse = await this.findReusableTab(url);
+    if (reuse) {
+      await this.session.use(reuse.targetId);
+      this.currentTargetId = reuse.targetId;
+      this.emitTarget();
+      if (!samePageUrl(reuse.url, url)) {
+        await this.session.domains.Page.enable({}).catch(() => undefined);
+        await this.session.domains.Page.navigate({ url });
+        await this.waitForUsableUrl(reuse.targetId);
+        await this.settle();
+      }
+      return await this.snapshot();
+    }
     const { targetId } = await this.session.domains.Target.createTarget({ url });
     const sessionId = await this.session.use(targetId);
     this.activeTask?.tabs.set(targetId, sessionId);
     this.currentTargetId = targetId;
+    this.emitTarget();
     await this.waitForUsableUrl(targetId);
     return await this.snapshot();
+  }
+
+  private async findReusableTab(url: string): Promise<PageTarget | undefined> {
+    if (url === 'about:blank') return undefined;
+    let origin: string;
+    try { origin = new URL(url).origin; } catch { return undefined; }
+    const pages = await listPageTargets(this.session);
+    const sameOrigin = pages.filter(page => {
+      try { return new URL(page.url).origin === origin; } catch { return false; }
+    });
+    return sameOrigin.find(page => page.targetId === this.currentTargetId) || sameOrigin[0];
   }
 
   async snapshot(): Promise<SnapshotResult> {
@@ -234,6 +313,29 @@ export class BrowserApi {
     this.requireExtension();
     this.requireTarget();
     return await this.session.domains.Runtime.evaluate({ expression, returnByValue: true });
+  }
+
+  async screenshot(options: { fullPage?: boolean } = {}): Promise<{ mimeType: string; data: string; title: string; url: string }> {
+    this.requireExtension();
+    const targetId = this.requireTarget();
+    await this.session.domains.Page.enable({}).catch(() => undefined);
+    const captured = await this.session.domains.Page.captureScreenshot({
+      format: 'jpeg',
+      quality: 60,
+      ...(options.fullPage ? { captureBeyondViewport: true } : {}),
+    }) as { data?: string };
+    if (!captured?.data) throw new BrowserApiError(502, 'Screenshot failed');
+    const target = await this.targetInfo(targetId);
+    return { mimeType: 'image/jpeg', data: captured.data, title: target.title, url: target.url };
+  }
+
+  async fill(ref: number | string, text: string): Promise<{ ok: true; snapshot: string; landed: TypeLanding }> {
+    const targetId = this.requireTarget();
+    let snapshot = this.snapshots.get(targetId);
+    if (snapshot === undefined) snapshot = (await this.snapshot()).snapshot;
+    const landed = await this.actions.fill(ref, snapshot, text);
+    await this.settle();
+    return { ok: true, snapshot: (await this.snapshot()).snapshot, landed };
   }
 
   private async settle(): Promise<void> {
@@ -304,6 +406,8 @@ export function handleBrowserRequest(
       case '/browser/type': return await api.type(requiredRef(body), requiredString(body, 'text'));
       case '/browser/press': return await api.press(requiredString(body, 'key'));
       case '/browser/eval': return await api.evaluate(requiredString(body, 'expression'));
+      case '/browser/screenshot': return await api.screenshot({ fullPage: body.fullPage === true });
+      case '/browser/fill': return await api.fill(requiredRef(body), requiredString(body, 'text'));
       default: throw new BrowserApiError(404, 'Not found');
     }
   };

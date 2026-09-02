@@ -219,5 +219,50 @@ test('successful ask and pi harness turns schedule memory while errors do not', 
   await abortedRequest;
   await new Promise(resolveWait => setTimeout(resolveWait, 70));
   await new Promise<void>(resolveClose => aborted.server.close(() => resolveClose()));
-  assert.equal(scheduled.some(item => item.sessionId === 'abort-hook'), false);
+  assert.equal(scheduled.some(item => item.sessionId === 'abort-hook'), true);
+});
+
+test('ask keeps running after the viewer disconnects and Stop aborts it', async (t) => {
+  const root = temporaryMemory(t);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const { server } = createReplServer({
+    memoryRoot: root,
+    askTranscriptDirectory: resolve(root, 'ask-transcripts'),
+    runAskImpl: async (_session, _prompt, _target, _run, emit) => {
+      emit({ type: 'status', message: 'working' });
+      await gate;
+      return 'Done in background';
+    },
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(() => new Promise<void>(resolveClose => server.close(() => resolveClose())));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const base = `http://127.0.0.1:${address.port}`;
+
+  const controller = new AbortController();
+  const ask = fetch(`${base}/ask`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, signal: controller.signal,
+    body: JSON.stringify({ harness: 'ask', sessionId: 'bg-hook', prompt: 'Stay alive' }),
+  }).catch(() => undefined);
+  await new Promise(resolveWait => setTimeout(resolveWait, 30));
+  controller.abort();
+  await ask;
+
+  const health = await fetch(`${base}/health`).then(response => response.json()) as { busySessionIds?: string[] };
+  assert.ok(health.busySessionIds?.includes('bg-hook'));
+  const events = await fetch(`${base}/sessions/bg-hook/events`);
+  assert.equal(events.status, 200);
+  assert.ok(events.body);
+  const { value } = await events.body.getReader().read();
+  assert.match(new TextDecoder().decode(value || new Uint8Array()), /working|status/);
+
+  const stopped = await fetch(`${base}/sessions/bg-hook/abort`, { method: 'POST' });
+  assert.equal(stopped.status, 200);
+  release();
+  await new Promise(resolveWait => setTimeout(resolveWait, 30));
+  const idle = await fetch(`${base}/sessions/bg-hook/events`);
+  assert.equal(idle.status, 204);
 });

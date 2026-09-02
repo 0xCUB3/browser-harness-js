@@ -1,6 +1,6 @@
 import { archivedListEl, archivedToggleEl, fullChats, messagesEl, sessionLabel, siteChipWrap } from './dom.js';
 import { settings, currentHarness } from './state.js';
-import { drainQueue, inFlightAsks, renderPending, updateSend } from './composer.js';
+import { drainQueue, inFlightAsks, renderPending, resumeAskStream, updateSend } from './composer.js';
 import { addError, addHydratedAssistant, addUser, scrollToBottom } from './transcript.js';
 import { renderSiteChip } from './tabs-ui.js';
 import { closePopover, isModel, loadHarness } from './pickers.js';
@@ -9,6 +9,7 @@ import { showView } from './views.js';
 
 let sessions = [];
 let sessionId = null;
+let sessionsLoadError = false;
 let transcriptRequest = 0;
 let chatsFilter = '';
 const sessionRoots = new Map();
@@ -24,14 +25,18 @@ function openSession(id) {
 async function loadSessions(preferredId = sessionId, activate = false) {
   try {
     const response = await fetch(`http://127.0.0.1:${settings.daemonPort}/sessions`);
+    if (!response.ok) throw new Error(`Could not load sessions (${response.status})`);
     const data = await response.json();
     sessions = Array.isArray(data.sessions) ? data.sessions : [];
+    sessionsLoadError = false;
     renderSessionControl();
     if (!activate) return;
     const selected = sessions.find(item => item.id === preferredId) || sessions[0];
     if (selected) await switchSession(selected.id, true);
     else await createSession();
   } catch {
+    // Keep whatever we already had. A dead daemon used to look like "no chats".
+    sessionsLoadError = true;
     renderSessionControl();
   }
 }
@@ -73,6 +78,7 @@ async function switchSession(id, hydrate = true) {
   const hasVisibleNodes = previousId === id && messageNodes().length > 0;
   if (sessionRoots.has(id) || hasInFlightAsk(id)) restoreSession(id);
   else if (hydrate && !hasVisibleNodes) await hydrateTranscript(id);
+  if (!hasInFlightAsk(id)) void resumeAskStream(id);
   updateSend();
   renderPending();
   drainQueue();
@@ -108,9 +114,11 @@ async function hydrateTranscript(id) {
     const response = await fetch(`http://127.0.0.1:${settings.daemonPort}/sessions/${encodeURIComponent(id)}/messages`);
     const data = await response.json();
     if (request !== transcriptRequest || id !== sessionId || !Array.isArray(data.messages)) return;
+    const busy = sessions.some(item => item.id === id && item.busy);
+    const messages = busy && data.messages.at(-1)?.role === 'assistant' ? data.messages.slice(0, -1) : data.messages;
     let firstUserPrompt = '';
     let firstAssistantReply = '';
-    for (const message of data.messages) {
+    for (const message of messages) {
       if (message?.role === 'user' && typeof message.text === 'string') {
         if (!firstUserPrompt && message.text.trim()) firstUserPrompt = message.text.trim();
         addUser(message.text);
@@ -227,4 +235,4 @@ async function requestSessionTitle(item) {
   } catch { await applyFallbackSessionTitle(item); }
 }
 
-export { sessions, sessionId, openSession, loadSessions, createSession, switchSession, hasInFlightAsk, clearMessages, renderSessionControl, updateSessionName, fallbackSessionName, isUntitledSessionName, applyFallbackSessionTitle, requestSessionTitle };
+export { sessions, sessionId, sessionsLoadError, openSession, loadSessions, createSession, switchSession, hasInFlightAsk, clearMessages, renderSessionControl, updateSessionName, fallbackSessionName, isUntitledSessionName, applyFallbackSessionTitle, requestSessionTitle };

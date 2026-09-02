@@ -115,6 +115,9 @@ test('browser extension keeps normal Pi tools available alongside browser tools'
 
   assert.doesNotMatch(source, /pi\.on\('tool_call'/);
   assert.match(source, /File, shell, spawn and web-search tools are allowed/);
+  assert.match(source, /name: 'browser_screenshot'/);
+  assert.match(source, /name: 'browser_fill'/);
+  assert.match(source, /type: 'image' as const/);
   assert.match(source, /for \(const tool of tools\) pi\.registerTool\(tool\)/);
 });
 
@@ -266,6 +269,34 @@ test('streams thinking separately and ends it without changing the answer', asyn
     { type: 'delta', message: 'Visible answer' },
     { type: 'answer', message: 'Visible answer' },
   ]);
+});
+
+test('forwards screenshot images on tool end without putting base64 in the detail', async () => {
+  const rpc = new PiRpc(() => fakePi((command, stdout) => {
+    if (command.type !== 'prompt') return;
+    stdout.write(`${JSON.stringify({ type: 'response', command: 'prompt', success: true, id: command.id })}\n`);
+    stdout.write(`${JSON.stringify({
+      type: 'tool_execution_end',
+      toolCallId: 'shot-1',
+      toolName: 'browser_screenshot',
+      result: {
+        content: [
+          { type: 'text', text: '{\"title\":\"Home\"}' },
+          { type: 'image', data: 'abc123', mimeType: 'image/jpeg' },
+        ],
+        details: { title: 'Home', url: 'https://example.test/' },
+      },
+    })}\n`);
+    stdout.write(`${JSON.stringify({ type: 'agent_end' })}\n`);
+  }));
+  const events: PiEvent[] = [];
+  await rpc.prompt('Look', event => events.push(event));
+  const tool = events.find(event => event.type === 'tool');
+  assert.equal(tool?.type, 'tool');
+  if (tool?.type !== 'tool') return;
+  assert.equal(tool.detail, '{\"title\":\"Home\"}');
+  assert.deepEqual(tool.images, [{ data: 'abc123', mimeType: 'image/jpeg' }]);
+  assert.ok(!String(tool.detail).includes('abc123'));
 });
 
 test('streams tool execution start and end with short details', async () => {

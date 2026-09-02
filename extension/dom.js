@@ -5,6 +5,7 @@ const viewChat = document.querySelector('#view-chat');
 const viewSettings = document.querySelector('#view-settings');
 const viewSkills = document.querySelector('#view-skills');
 const viewMemory = document.querySelector('#view-memory');
+const viewRoutines = document.querySelector('#view-routines');
 const fullNav = document.querySelector('#full-nav');
 const fullChats = document.querySelector('#full-chats');
 const navToggleBtn = document.querySelector('#nav-toggle');
@@ -102,7 +103,7 @@ const archivedListEl = document.querySelector('#archived-list');
 const archivedToggleEl = document.querySelector('#archived-chats');
 
 export {
-  viewHome, viewSetup, viewChat, viewSettings, viewSkills, viewMemory,
+  viewHome, viewSetup, viewChat, viewSettings, viewSkills, viewMemory, viewRoutines,
   fullNav, fullChats, navToggleBtn, navExpandBtn,
   homeForm, queryEl, queryGhostEl, suggestEl, searchAreaEl, tabHintEl, searchModeBtn, askModeBtn, homeStatusEl, chatCardsEl, chatsEmptyEl,
   setupSlot, settingsSlot, configEl, statusEl, bannerEl, runtimeErrorEl, configErrorEl, portEl,

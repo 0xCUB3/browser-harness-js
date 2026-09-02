@@ -7,7 +7,7 @@ const extensionDirectory = new URL('../../../extension/', import.meta.url);
 
 const uiModuleNames = [
   'sidepanel.js', 'dom.js', 'state.js', 'views.js', 'home.js', 'sessions-ui.js',
-  'editors.js', 'pickers.js', 'tabs-ui.js', 'composer.js', 'sources.js', 'transcript.js', 'markdown.js',
+  'editors.js', 'pickers.js', 'tabs-ui.js', 'composer.js', 'routines-ui.js', 'sources.js', 'transcript.js', 'markdown.js',
 ];
 const readUiSource = async () =>
   (await Promise.all(uiModuleNames.map(name => readFile(new URL(name, extensionDirectory), 'utf8')))).join('\n');
@@ -15,6 +15,15 @@ const readUiSource = async () =>
 test('offscreen document does not access extension storage', async () => {
   const source = await readFile(new URL('offscreen.js', extensionDirectory), 'utf8');
   assert.doesNotMatch(source, /chrome\.storage/);
+});
+
+test('offscreen reconnect resyncs an already-open socket instead of replacing it', async () => {
+  const source = await readFile(new URL('offscreen.js', extensionDirectory), 'utf8');
+  assert.match(source, /function isOpen\(\) \{\s*return socket\?\.readyState === WebSocket\.OPEN;/);
+  assert.match(source, /message\.type === 'status'/);
+  assert.match(source, /sendResponse\(\{ connected: isOpen\(\) \}\)/);
+  assert.match(source, /samePort && \(isOpen\(\) \|\| isConnecting\(\)\)/);
+  assert.match(source, /if \(isOpen\(\)\) chrome\.runtime\.sendMessage\(\{ source: 'offscreen', type: 'connected' \}\)/);
 });
 
 test('offscreen reconnect ignores stale socket callbacks and closes before replacing', async () => {
@@ -32,13 +41,17 @@ test('offscreen reconnect ignores stale socket callbacks and closes before repla
   assert.doesNotMatch(source, /socket\?\.close\(\);\s*connect\(\)/);
 });
 
-test('bootstrap reconnects only for a new offscreen document or changed port', async () => {
+test('bootstrap resyncs daemonConnected from the existing offscreen socket', async () => {
   const source = await readFile(new URL('background.js', extensionDirectory), 'utf8');
   const bootstrap = source.slice(source.indexOf('async function bootstrap()'), source.indexOf('\nchrome.action.onClicked'));
 
-  assert.match(bootstrap, /const hadOffscreen = await chrome\.offscreen\.hasDocument\(\);\s*await ensureOffscreen\(\)/);
-  assert.match(bootstrap, /if \(!hadOffscreen \|\| offscreenDaemonPort !== daemonPort\)/);
+  assert.match(bootstrap, /await ensureOffscreen\(\)/);
+  assert.match(bootstrap, /type: 'reconnect', daemonPort/);
+  assert.match(bootstrap, /daemonConnected = reply\?\.connected === true/);
   assert.match(bootstrap, /chrome\.storage\.local\.set\(\{ offscreenDaemonPort: daemonPort \}\)/);
+  assert.doesNotMatch(bootstrap, /hadOffscreen/);
+  assert.match(source, /message\?\.type === 'getUiState'[\s\S]*?syncDaemonConnected\(\)/);
+  assert.match(source, /destination: 'offscreen', type: 'status'/);
 });
 
 test('local chats URLs replace the shortcut tab or focus an existing full chats tab', async () => {
@@ -139,10 +152,25 @@ test('side panel prompt enables a full Pi agent without terminating the running 
   assert.match(prompt, /Never run `browser-harness-js --stop` or `browser-harness-js --restart`/);
   assert.match(prompt, /Never POST `\/quit` or call `process\.exit`/);
   assert.match(prompt, /browser_eval runs page JavaScript through Runtime\.evaluate/);
+  assert.match(prompt, /browser_screenshot returns a JPEG/);
+  assert.match(prompt, /browser_fill replaces an input or textarea/);
+  const [browserTools, transcript, css] = await Promise.all([
+    readFile(new URL('pi-browser-extension.ts', import.meta.url), 'utf8'),
+    readFile(new URL('transcript.js', extensionDirectory), 'utf8'),
+    readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
+  ]);
+  assert.match(browserTools, /name: 'browser_screenshot'/);
+  assert.match(browserTools, /name: 'browser_fill'/);
+  assert.match(transcript, /Looked\$\{hint/);
+  assert.match(transcript, /className = 'tool-shot'/);
+  assert.match(css, /\.tool-shot/);
+
   assert.match(prompt, /normal Pi tools, including read, bash/);
   assert.match(prompt, /Ignore other browser-automation skills when browser_\* or browser-harness-js can do the job/);
   assert.doesNotMatch(prompt, /aside-browser/);
   assert.match(prompt, /Do not start by reading `skills\/cdp\/SKILL\.md`/);
+  assert.match(prompt, /typeset it with KaTeX/);
+  assert.match(prompt, /\$\\ce\{AgCl\(s\) <=> Ag\+\(aq\) \+ Cl-\(aq\)\}/);
   assert.doesNotMatch(prompt, /Never read files|Never use bash/);
   assert.match(repl, /console\.error\('Browser Harness REPL quit requested via POST \/quit'\)/);
 });
@@ -202,13 +230,18 @@ test('active web tabs attach automatically while extension and daemon tabs are r
   assert.equal(await context.isAttachablePage?.('http://[::1]:9876/anything'), false);
   assert.equal(await context.isAttachablePage?.('chrome-extension://example/sidepanel.html?layout=full'), false);
   assert.equal(await context.isAttachablePage?.('chrome://extensions/'), false);
-  assert.match(source, /chrome\.tabs\.onActivated\.addListener\(\(\{ tabId \}\) => \{\s*if \(daemonConnected\) attachIfNeeded\(tabId\)/);
+  assert.match(source, /chrome\.tabs\.onActivated\.addListener\(\(\{ tabId \}\) => \{\s*if \(daemonConnected\) attachActiveUnlessBusy\(tabId\)/);
+  assert.match(source, /health\?\.busySessionIds/);
+  assert.match(source, /async function attachActiveUnlessBusy/);
+  assert.match(source, /if \(askBusy\)/);
+  assert.match(source, /type === 'setAskBusy'/);
+  assert.match(source, /setOptions\(\{ enabled: true, path: 'sidepanel.html' \}\)/);
   assert.match(source, /!await isAttachablePage\(tab\.url \|\| '', allowAboutBlank\)/);
   assert.match(source, /async function attach\(tabId, reportError = true, allowAboutBlank = false\) \{\s*const tab = await chrome\.tabs\.get[\s\S]*?!await isAttachablePage\(tab\.url \|\| '', allowAboutBlank\)/);
   assert.match(attachableSource, /allowAboutBlank && url === 'about:blank'/);
   assert.match(attachableSource, /const \{ daemonPort = 9876 \} = await chrome\.storage\.local\.get\('daemonPort'\)/);
   assert.match(source, /message\.type === 'createTarget'[\s\S]*?Date\.now\(\) \+ 3000[\s\S]*?attachWithRetry\(tab\.id\)/);
-  assert.match(source, /message\.type === 'connected'[\s\S]*?daemonConnected = true;\s*attachActiveTab\(\)/);
+  assert.match(source, /message\.type === 'connected'[\s\S]*?daemonConnected = true;\s*publishState\(\);\s*attachActiveTab\(\)/);
 });
 
 test('side panel target selection skips the full chats UI and daemon pages', async () => {
@@ -234,6 +267,7 @@ test('side panel target selection skips the full chats UI and daemon pages', asy
   runInNewContext(`${targetSource}\nglobalThis.targetId = targetId;`, context);
 
   assert.equal(context.targetId?.(), 'chrome-tab-3');
+  assert.match(source, /const pinned = pinnedId != null \? attachedPages.find\(tab => tab.tabId === pinnedId\)/);
   assert.match(targetSource, /\^\(chrome-extension\|chrome\):/);
   assert.match(targetSource, /attachedPages = state\.tabs\.filter\(isTargetPage\)/);
 });
@@ -267,6 +301,12 @@ test('side panel queues busy sends by default and offers per-message actions', a
   assert.match(sendFlow, /pauseQueueDrain = true[\s\S]*Promise\.allSettled[\s\S]*startAsk\(item\)[\s\S]*pauseQueueDrain = false/);
   assert.match(sendFlow, /\.finally\(\(\) => \{[\s\S]*inFlightAsks\.delete\(request\)[\s\S]*drainQueue\(\)/);
   assert.match(sendFlow, /if \(pauseQueueDrain \|\| activeRequests\(\)\.length > 0\) return;[\s\S]*queuedAsks\.findIndex\(item => item\.sessionId === sessionId\)[\s\S]*startAsk\(queuedAsks\.splice\(index, 1\)\[0\]\)/);
+});
+
+test('pending Queue chip sends the follow-up immediately', async () => {
+  const source = await readUiSource();
+  assert.match(source, /async function sendPendingSteer\(\)[\s\S]*queuedAsks\.findIndex\(item => item.sessionId === sessionId\)/);
+  assert.doesNotMatch(source, /item.sessionId === sessionId && item.action === 'steer'/);
 });
 
 test('composer attaches files from picker, drop and paste and forwards image payloads', async () => {
@@ -473,8 +513,14 @@ test('new tab home searches, asks and opens chats in the same page', async () =>
   assert.equal(manifest.chrome_url_overrides?.newtab, 'ntp-redirect.html');
   assert.equal((manifest.side_panel as { default_path?: string } | undefined)?.default_path, 'sidepanel.html');
   assert.ok(manifest.permissions?.includes('sidePanel'));
+  assert.match(redirect, /src="early-input\.js"/);
   assert.match(redirect, /src="newtab\.js"/);
+  assert.match(redirect, /id="early-query"/);
+  assert.match(redirect, /autofocus/);
   assert.match(stub, /location\.replace\(chrome\.runtime\.getURL\('sidepanel\.html\?view=home'\)\)/);
+  assert.match(html, /<script src="early-input\.js"><\/script>/);
+  assert.ok(html.indexOf('early-input.js') < html.indexOf('layout.js'));
+  assert.match(source, /consumeEarlyInput\(\)/);
   assert.match(html, /Search or type a URL/);
   assert.match(html, /Tab<\/kbd> to switch/);
   assert.match(html, /id="view-home"/);
@@ -512,6 +558,82 @@ test('new tab home searches, asks and opens chats in the same page', async () =>
   assert.match(html, /src="layout\.js"/);
 });
 
+test('new tab captures keystrokes before the search field is focused', async () => {
+  const source = await readFile(new URL('early-input.js', extensionDirectory), 'utf8');
+  const keyListeners: Array<(event: object) => void> = [];
+  const storage = new Map<string, string>();
+  storage.set('bh-early-query', 'g');
+  const body = { id: 'body' };
+  let active: { id: string } = body;
+  const nodes = new Map<string, { id: string; value: string; hidden?: boolean; focus: () => void; dispatchEvent: () => void }>();
+  let onReady: (() => void) | undefined;
+  const document = {
+    body,
+    documentElement: { id: 'html' },
+    readyState: 'loading',
+    get activeElement() { return active; },
+    hasFocus: () => true,
+    getElementById: (id: string) => nodes.get(id) ?? null,
+    addEventListener(type: string, fn: () => void) { if (type === 'DOMContentLoaded') onReady = fn; },
+  };
+  const input = {
+    id: 'query',
+    value: '',
+    focus() { active = input; },
+    dispatchEvent() {},
+  };
+  const sandbox: Record<string, unknown> & { __earlyInput?: { text: string } } = {
+    location: { search: '?view=home', pathname: '/sidepanel.html' },
+    sessionStorage: {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value); },
+      removeItem: (key: string) => { storage.delete(key); },
+    },
+    document,
+    URLSearchParams,
+    Event: class FakeEvent { constructor(type: string) { Object.assign(this, { type }); } },
+    addEventListener(type: string, fn: (event: object) => void, capture?: boolean) {
+      if (type === 'keydown' && capture) keyListeners.push(fn);
+    },
+    removeEventListener(type: string, fn: (event: object) => void) {
+      const index = keyListeners.indexOf(fn);
+      if (index >= 0) keyListeners.splice(index, 1);
+    },
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout() { return 1; },
+    queueMicrotask(fn: () => void) { fn(); },
+  };
+  sandbox.window = sandbox;
+  runInNewContext(source, sandbox);
+  assert.equal(sandbox.__earlyInput?.text, 'g');
+
+  const typed = { key: 'i', isComposing: false, metaKey: false, ctrlKey: false, altKey: false, defaultPrevented: false, preventDefault() { typed.defaultPrevented = true; } };
+  for (const listener of keyListeners) listener(typed);
+  assert.equal(sandbox.__earlyInput?.text, 'gi');
+  assert.equal(typed.defaultPrevented, true);
+
+  nodes.set('query', input);
+  nodes.set('view-home', { id: 'view-home', value: '', hidden: true, focus() {}, dispatchEvent() {} });
+  onReady?.();
+  assert.equal(input.value, 'gi');
+  assert.equal(active, input);
+  assert.equal(nodes.get('view-home')?.hidden, false);
+
+  const panel: Record<string, unknown> = {
+    location: { search: '', pathname: '/sidepanel.html' },
+    document: { readyState: 'complete', addEventListener() {}, getElementById() { return null; } },
+    URLSearchParams,
+    addEventListener() {},
+    setInterval() { return 1; },
+    clearInterval() {},
+    setTimeout() { return 1; },
+  };
+  panel.window = panel;
+  runInNewContext(source, panel);
+  assert.equal(panel.__earlyInput, undefined);
+});
+
 test('new tab rail is inset, ignores focus stealing and toggles in place', async () => {
   const [html, css, source] = await Promise.all([
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
@@ -538,6 +660,9 @@ test('new tab rail is inset, ignores focus stealing and toggles in place', async
   assert.match(source, /changes\.fullNavCollapsed\?\.newValue/);
   assert.match(source, /function renderHomeChats/);
   assert.doesNotMatch(source.slice(source.indexOf('function renderHomeChats'), source.indexOf('\nfunction relativeTime')), /pip|::after/);
+  assert.match(source, /sessionsLoadError\s*\?[\s\S]*Could not load chats/);
+  assert.match(source, /Keep whatever we already had/);
+  assert.match(source, /onDaemonReconnect\(\(\) => \{[\s\S]*?void loadSessions\(sessionId, false\);\s*if \(!initialized\) return;/);
   assert.match(expandRule, /left:\s*(?:8|9|10|11|12)px/);
   assert.match(expandRule, /top:\s*(?:8|9|10|11|12)px/);
   assert.match(expandRule, /width:\s*(?:28|29|30|31|32)px/);
@@ -780,23 +905,31 @@ test('assistant sources use stripped host pills, collapse adjacent cites and exp
 });
 
 test('side panel loads local KaTeX and wires math rendering', async () => {
-  const [html, source, katex] = await Promise.all([
+  const [html, source, katex, mhchem] = await Promise.all([
     readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
     readUiSource(),
     readFile(new URL('vendor/katex/katex.min.js', extensionDirectory), 'utf8'),
+    readFile(new URL('vendor/katex/mhchem.min.js', extensionDirectory), 'utf8'),
   ]);
   assert.match(html, /href="vendor\/katex\/katex\.min\.css"/);
   assert.match(html, /src="vendor\/katex\/katex\.min\.js"/);
+  assert.match(html, /src="vendor\/katex\/katex\.min\.js"[\s\S]*src="vendor\/katex\/mhchem\.min\.js"/);
   assert.doesNotMatch(html, /https?:\/\//);
   assert.match(source, /katex\.render\(/);
   assert.match(source, /segmentMathMarkdown/);
+  assert.match(source, /mhchemCommandEnd/);
   assert.match(source, /appendInlines\(node, heading\[2\], math\)/);
   assert.match(source, /appendInlines\(li, lines\[i\]\.replace\(itemRe, ''\), math\)/);
   assert.match(source, /node\.textContent = segment\.source/);
   assert.ok(katex.length > 100_000);
+  assert.ok(mhchem.length > 10_000);
   const context: { katex?: { renderToString: (latex: string) => string } } = {};
   runInNewContext(katex, context);
   assert.match(context.katex?.renderToString('E = mc^2') || '', /class="katex"/);
+  assert.throws(() => context.katex?.renderToString('\\ce{H2O}'));
+  runInNewContext(mhchem, context);
+  assert.match(context.katex?.renderToString('\\ce{H2O}') || '', /class="katex"/);
+  assert.match(context.katex?.renderToString('\\ce{AgCl(s) <=> Ag+(aq) + Cl-(aq)}') || '', /class="katex"/);
 });
 
 test('math segmentation supports TeX delimiters while skipping code and currency', async () => {
@@ -813,6 +946,8 @@ test('math segmentation supports TeX delimiters while skipping code and currency
     '$$y^2$$',
     '\\[z^3\\]',
     '\\begin{align}a &= b\\\\c &= d\\end{align}',
+    '\\ce{H2O}',
+    '\\pu{0.1 M}',
     '`$inline_code$`',
     '    $indented_code$',
     '~~~',
@@ -832,6 +967,8 @@ test('math segmentation supports TeX delimiters while skipping code and currency
       ['y^2', true],
       ['z^3', true],
       ['\\begin{align}a &= b\\\\c &= d\\end{align}', true],
+      ['\\ce{H2O}', false],
+      ['\\pu{0.1 M}', false],
     ],
   );
 });
@@ -859,6 +996,16 @@ test('panel batches streaming renders, exposes stop and jump controls, and backs
   assert.match(composer, /stopEl\.hidden = !busy/);
   assert.match(sidepanel, /#stop'\)\?\.addEventListener\('click', \(\) => stopActiveAsks\(\)\)/);
   assert.match(sidepanel, /event\.key === 'Escape' && activeRequests\(\)\.length/);
+  assert.match(composer, /\/sessions\/\$\{encodeURIComponent\(id\)\}\/abort/);
+  assert.match(composer, /\/sessions\/\$\{encodeURIComponent\(id\)\}\/events/);
+  assert.match(composer, /async function resumeAskStream/);
+  assert.match(composer, /function pinAskTab/);
+  assert.match(background, /chrome\.sidePanel\.open\(\{ windowId: tab\.windowId \}\)/);
+  assert.match(background, /attachActiveUnlessBusy/);
+  assert.match(transcript, /event\.type === 'target'/);
+  assert.match(tabsUi, /function agentTab\(\)/);
+  assert.match(tabsUi, /function setPinnedTabId/);
+  assert.match(sessionsUi, /void resumeAskStream\(id\)/);
 
   // /ask fails fast when the daemon never sends headers.
   assert.match(composer, /const headerTimeout = setTimeout\(\(\) => controller\.abort\(new Error\(/);
@@ -879,9 +1026,34 @@ test('panel batches streaming renders, exposes stop and jump controls, and backs
   assert.match(background, /if \(serialized === lastPublished\) return;/);
   assert.match(background, /if \(changeInfo\.url \|\| changeInfo\.title \|\| changeInfo\.status === 'complete'\) publishState\(\);/);
 
-  // Reconnect refreshes panel data; the panel reuses an empty session on open.
+  // Reconnect refreshes panel data; a new panel restores the last chat instead of minting one.
   assert.match(tabsUi, /if \(state\.connected && !wasConnected\)/);
   assert.match(sidepanel, /onDaemonReconnect\(\(\) => \{/);
   assert.match(sessionsUi, /async function createSession\(\{ reuseEmpty = false \} = \{\}\)/);
-  assert.match(sidepanel, /await createSession\(\{ reuseEmpty: true \}\)/);
+  assert.match(sidepanel, /if \(existing\) await switchSession\(existing\.id, true\)/);
+  assert.match(sidepanel, /else await createSession\(\{ reuseEmpty: true \}\)/);
+});
+
+test('routines UI exposes saved, scheduled and continuing browser work', async () => {
+  const [source, html, css] = await Promise.all([
+    readUiSource(),
+    readFile(new URL('sidepanel.html', extensionDirectory), 'utf8'),
+    readFile(new URL('sidepanel.css', extensionDirectory), 'utf8'),
+  ]);
+  assert.match(html, /data-nav="routines"/);
+  assert.match(html, /id="open-routines"/);
+  assert.match(html, /id="view-routines"/);
+  assert.match(html, /value="cron">Start a fresh chat each run/);
+  assert.match(html, /value="heartbeat">Continue an existing chat/);
+  assert.match(html, /value="manual">Manually/);
+  assert.match(html, /value="weekdays">Weekdays/);
+  assert.ok(source.includes('/harness/routines${path}'));
+  assert.ok(source.includes("method: editingId ? 'PATCH' : 'POST'"));
+  assert.ok(source.includes("/${encodeURIComponent(id)}/run"));
+  assert.ok(source.includes("method: 'DELETE'"));
+  assert.ok(source.includes('openSession(routine.lastResultSessionId)'));
+  assert.ok(source.includes("new CustomEvent('harness:routines-view')"));
+  assert.ok(css.includes('.routine-editor[hidden] { display: none; }'));
+  assert.ok(css.includes('.routine-field[hidden] { display: none; }'));
+  assert.ok(css.includes('.routine-badge.running'));
 });

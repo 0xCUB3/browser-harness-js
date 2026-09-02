@@ -3,6 +3,7 @@ import { settings } from './state.js';
 import { view } from './views.js';
 
 let state = { connected: false, tabs: [], activeTabId: null, lastError: '' };
+let pinnedTabId = null;
 const favicons = new Map();
 
 const reconnectListeners = new Set();
@@ -39,6 +40,31 @@ function currentHttpTab() {
   return httpTabs().find(tab => tab.tabId === state.activeTabId) ?? null;
 }
 
+function tabIdFromTargetId(targetId) {
+  const match = /^chrome-tab-(\d+)$/.exec(String(targetId || ''));
+  return match ? Number(match[1]) : null;
+}
+
+function setPinnedTabId(tabId) {
+  pinnedTabId = typeof tabId === 'number' ? tabId : null;
+  void chrome.storage?.local?.set?.({ pinnedTabId });
+  renderSiteChip();
+}
+
+function pinTarget(targetId) {
+  const id = tabIdFromTargetId(targetId);
+  if (id != null) setPinnedTabId(id);
+}
+
+function agentTab() {
+  if (typeof pinnedTabId === 'number') {
+    return httpTabs().find(tab => tab.tabId === pinnedTabId)
+      ?? state.tabs.find(tab => tab.tabId === pinnedTabId)
+      ?? currentHttpTab();
+  }
+  return currentHttpTab();
+}
+
 function hostOf(url) {
   try { return new URL(url).hostname; } catch { return ''; }
 }
@@ -50,7 +76,7 @@ async function refreshFavicon(tabId) {
   } catch {
     favicons.delete(tabId);
   }
-  if (tabId === state.activeTabId) renderSiteChip();
+  if (tabId === state.activeTabId || tabId === pinnedTabId) renderSiteChip();
 }
 
 function letterTile(label) {
@@ -61,7 +87,7 @@ function letterTile(label) {
 }
 
 function renderSiteChip() {
-  const tab = currentHttpTab();
+  const tab = agentTab();
   if (!tab) {
     siteChipWrap.hidden = true;
     siteChipWrap.replaceChildren();
@@ -150,8 +176,10 @@ function isTargetPage(tab) {
 
 function targetId() {
   const attachedPages = state.tabs.filter(isTargetPage);
+  const pinnedId = typeof pinnedTabId === 'number' ? pinnedTabId : null;
+  const pinned = pinnedId != null ? attachedPages.find(tab => tab.tabId === pinnedId) : undefined;
   const attachedCurrent = attachedPages.find(tab => tab.tabId === state.activeTabId);
-  return (attachedCurrent ?? attachedPages[0])?.targetId;
+  return (pinned ?? attachedCurrent ?? attachedPages[0])?.targetId;
 }
 
-export { state, favicons, onDaemonReconnect, renderState, httpTabs, currentHttpTab, hostOf, refreshFavicon, letterTile, renderSiteChip, renderTabs, targetId };
+export { state, favicons, onDaemonReconnect, renderState, httpTabs, currentHttpTab, agentTab, hostOf, refreshFavicon, letterTile, renderSiteChip, renderTabs, targetId, setPinnedTabId, pinTarget };

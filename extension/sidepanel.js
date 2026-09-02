@@ -2,13 +2,14 @@ import { composerEl, composerPlus, fileInput, fullNav, homeForm, modelBtn, navEx
 import { applyPort, clampPort, continueSetup, currentBusySend, currentHarness, persistSettings, query, settings, syncFooter, syncForm } from './state.js';
 import { layoutIsFull, setNavCollapsed, showView, view } from './views.js';
 import { acceptInlineCompletion, acceptTabComplete, handleHomeModeClick, hideSuggest, homeMode, moveSuggest, scheduleSuggest, setHomeMode, submitHomeQuery, warmSuggestCaches } from './home.js';
-import { createSession, loadSessions, sessionId, switchSession } from './sessions-ui.js';
+import { createSession, loadSessions, sessionId, sessions, switchSession } from './sessions-ui.js';
 import { createSkill, saveMemory, saveSkill } from './editors.js';
 import { closePopover, closeSendMenu, isModel, loadHarness, placePopover, popoverKind, renderModelOptions, togglePopover } from './pickers.js';
-import { favicons, onDaemonReconnect, renderSiteChip, renderState, state } from './tabs-ui.js';
+import { favicons, onDaemonReconnect, renderSiteChip, renderState, setPinnedTabId, state } from './tabs-ui.js';
 import { activeRequests, attachFiles, autosize, consumePendingNewTabAsk, discardPending, sendAsk, sendPendingSteer, stopActiveAsks, updateSend } from './composer.js';
 import { scrollToBottom } from './transcript.js';
 import { cancelSourceCardHide, currentSource, cycleSourceCard, hideSourceCard, placeSourceCard, scheduleSourceCardHide, sourceCardPill } from './sources.js';
+import { initRoutinesUi } from './routines-ui.js';
 
 let initialized = false;
 
@@ -34,6 +35,9 @@ if (chrome.tabs?.onUpdated) {
 
 document.querySelector('#continue').addEventListener('click', continueSetup);
 document.querySelector('#open-settings').addEventListener('click', () => showView('settings'));
+document.querySelector('#open-routines').addEventListener('click', () => showView('routines'));
+document.querySelector('#routines-done').addEventListener('click', () => showView('chat'));
+initRoutinesUi();
 navToggleBtn.addEventListener('click', () => setNavCollapsed(!settings.fullNavCollapsed));
 navExpandBtn.addEventListener('click', () => setNavCollapsed(false));
 navNewChatBtn.addEventListener('click', () => {
@@ -261,8 +265,8 @@ window.addEventListener('resize', () => {
 // When the daemon comes back (restart, port change), refresh sessions and model
 // config so the panel does not stay stale until the next manual navigation.
 onDaemonReconnect(() => {
-  if (!initialized) return;
   void loadSessions(sessionId, false);
+  if (!initialized) return;
   if (currentHarness() === 'pi') loadHarness();
 });
 
@@ -270,13 +274,14 @@ init();
 
 async function init() {
   void warmSuggestCaches();
-  const stored = await chrome.storage.local.get(['daemonPort', 'harness', 'model', 'titleModel', 'thinkingLevel', 'busySend', 'fullNavCollapsed', 'sessionId', 'pendingNewTabAsk', 'lastView']);
+  const stored = await chrome.storage.local.get(['daemonPort', 'harness', 'model', 'titleModel', 'thinkingLevel', 'busySend', 'fullNavCollapsed', 'sessionId', 'pendingNewTabAsk', 'lastView', 'pinnedTabId']);
   settings.daemonPort = clampPort(stored.daemonPort);
   settings.harness = stored.harness === 'ask' ? 'ask' : 'pi';
   settings.model = isModel(stored.model) ? stored.model : null;
   settings.titleModel = isModel(stored.titleModel) ? stored.titleModel : null;
   settings.thinkingLevel = typeof stored.thinkingLevel === 'string' ? stored.thinkingLevel : '';
   settings.busySend = ['queue', 'steer', 'now'].includes(stored.busySend) ? stored.busySend : 'queue';
+  if (typeof stored.pinnedTabId === 'number') setPinnedTabId(stored.pinnedTabId);
   const isFull = await layoutIsFull();
   if (!isFull) {
     fullNav.hidden = true;
@@ -287,19 +292,22 @@ async function init() {
   syncForm();
   await applyPort();
   if (!isFull) {
-    await loadSessions(null, false);
+    const preferred = typeof stored.sessionId === 'string' ? stored.sessionId : null;
+    await loadSessions(preferred, false);
     try {
       const response = await chrome.runtime.sendMessage({ type: 'getUiState' });
       if (response?.state) renderState(response.state);
     } catch { /* service worker may still be starting */ }
     showView('chat', false);
-    await createSession({ reuseEmpty: true });
+    const existing = preferred && sessions.find(item => item.id === preferred && !item.archived);
+    if (existing) await switchSession(existing.id, true);
+    else await createSession({ reuseEmpty: true });
     initialized = true;
     return;
   }
   const queryView = query.get('view') || query.get('nav');
   const requestedView = queryView || stored.lastView;
-  const requested = ['skills', 'memory', 'settings', 'chat', 'home'].includes(requestedView) ? requestedView : 'home';
+  const requested = ['routines', 'skills', 'memory', 'settings', 'chat', 'home'].includes(requestedView) ? requestedView : 'home';
   await loadSessions(typeof stored.sessionId === 'string' ? stored.sessionId : null, requested === 'chat');
   try {
     const response = await chrome.runtime.sendMessage({ type: 'getUiState' });

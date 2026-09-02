@@ -47,6 +47,9 @@ test('resolved AX nodes still receive real mouse clicks and type reports its lan
       Runtime: {
         callFunctionOn: async (params: { functionDeclaration: string }) => {
           functions.push(params.functionDeclaration);
+          if (params.functionDeclaration.includes('this.value = value')) {
+            return { result: { value: { tagName: 'TEXTAREA', preview: '.btn{color:red}', matchesTarget: true, length: 14 } } };
+          }
           if (params.functionDeclaration.includes('matchesTarget')) {
             return { result: { value: { tagName: 'DIV', preview: 'Reviewer note', matchesTarget: true } } };
           }
@@ -64,12 +67,15 @@ test('resolved AX nodes still receive real mouse clicks and type reports its lan
 
   await actions.click(2, refs);
   const landed = await actions.type(2, refs, 'Reviewer note');
+  const filled = await actions.fill(2, refs, '.btn{color:red}');
 
   assert.deepEqual(mouseEvents.map(event => event.type), ['mousePressed', 'mouseReleased', 'mousePressed', 'mouseReleased']);
   assert.ok(mouseEvents.every(event => event.x === 20 && event.y === 30));
   assert.equal(functions.filter(declaration => declaration.includes('this.click()')).length, 0);
   assert.ok(functions.some(declaration => declaration.includes('this.focus()')));
+  assert.ok(functions.some(declaration => declaration.includes('this.value = value')));
   assert.deepEqual(landed, { tagName: 'DIV', preview: 'Reviewer note', matchesTarget: true });
+  assert.deepEqual(filled, { tagName: 'TEXTAREA', preview: '.btn{color:red}', matchesTarget: true, length: 14 });
 });
 
 test('native browser routes list, open, snapshot and click through the extension relay', async t => {
@@ -139,6 +145,10 @@ test('native browser routes list, open, snapshot and click through the extension
     } else if (message.type === 'cdp') {
       let result: unknown = {};
       if (message.method === 'Accessibility.getFullAXTree') result = { nodes: axNodes };
+      if (message.method === 'Page.captureScreenshot') {
+        assert.equal(message.params.format, 'jpeg');
+        result = { data: 'abc123' };
+      }
       if (message.method === 'DOM.getBoxModel') {
         assert.equal(message.params.backendNodeId, 22);
         result = { model: { content: [10, 20, 30, 20, 30, 40, 10, 40], width: 20, height: 20 } };
@@ -186,6 +196,17 @@ test('native browser routes list, open, snapshot and click through the extension
   assert.match(clicked.snapshot, /button "Continue"/);
   assert.equal(mouseEvents, 2);
 
+  const shotResponse = await fetch(`${base}/browser/screenshot`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{}',
+  });
+  assert.equal(shotResponse.status, 200);
+  const shot = await shotResponse.json() as { mimeType: string; data: string; url: string };
+  assert.equal(shot.mimeType, 'image/jpeg');
+  assert.equal(shot.data, 'abc123');
+  assert.equal(shot.url, 'https://created.example.test/');
+
   const pressResponse = await fetch(`${base}/browser/press`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -207,11 +228,11 @@ test('native browser routes list, open, snapshot and click through the extension
   assert.equal(taskOpened.targetId, 'chrome-tab-73');
   browserApi.endTask(task);
 
-  await waitFor(() => closedTargets.includes(taskOpened.targetId));
   const remainingResponse = await fetch(`${base}/browser/tabs`);
   assert.equal(remainingResponse.status, 200);
   const remaining = await remainingResponse.json() as Array<{ targetId: string }>;
-  assert.deepEqual(remaining.map(tab => tab.targetId), [page.targetId, opened.targetId]);
+  assert.deepEqual(remaining.map(tab => tab.targetId), [page.targetId, opened.targetId, taskOpened.targetId]);
+  assert.equal(closedTargets.includes(taskOpened.targetId), false);
 });
 
 async function waitFor(predicate: () => boolean): Promise<void> {

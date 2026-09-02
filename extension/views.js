@@ -1,4 +1,4 @@
-import { configEl, fullNav, navExpandBtn, navToggleBtn, queryEl, setupSlot, settingsSlot, viewChat, viewHome, viewMemory, viewSettings, viewSetup, viewSkills } from './dom.js';
+import { configEl, fullNav, navExpandBtn, navToggleBtn, queryEl, setupSlot, settingsSlot, viewChat, viewHome, viewMemory, viewSettings, viewSetup, viewSkills, viewRoutines } from './dom.js';
 import { query, settings, syncForm, syncFooter, currentHarness } from './state.js';
 import { consumeEarlyInput, renderHomeChats } from './home.js';
 import { renderSiteChip, renderTabs } from './tabs-ui.js';
@@ -45,11 +45,13 @@ function showView(name, persist = true) {
   viewSettings.hidden = name !== 'settings';
   viewSkills.hidden = name !== 'skills';
   viewMemory.hidden = name !== 'memory';
+  viewRoutines.hidden = name !== 'routines';
   for (const button of document.querySelectorAll('[data-nav]')) button.classList.toggle('active', button.dataset.nav === name);
   closePopover();
   if (name === 'home') {
     renderHomeChats();
     queryEl.focus({ preventScroll: true });
+    consumeEarlyInput();
   } else if (name === 'setup') {
     setupSlot.append(configEl);
     configEl.hidden = false;
@@ -63,6 +65,8 @@ function showView(name, persist = true) {
     loadSkills();
   } else if (name === 'memory') {
     loadMemory();
+  } else if (name === 'routines') {
+    window.dispatchEvent(new CustomEvent('harness:routines-view'));
   } else if (name === 'chat') {
     syncFooter();
     renderSiteChip();

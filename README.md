@@ -43,6 +43,8 @@ The preferred unpacked extension is this repo's `extension/`. Open `chrome://ext
 
 Chrome's yellow “Browser Harness started debugging this browser” infobar is expected while a tab is attached. The side panel chats through the daemon's `/ask` endpoint and can use built-in Ask or a sibling `pi --mode rpc --no-session` process; neither changes the CDP transport. `session.connect()` prefers this extension when it is present.
 
+The full-page UI also has **Routines** for repeatable browser work. A routine can start a fresh chat or continue an existing one, run manually or on a local schedule, and be paused without deleting it. Definitions and run state stay local in `~/.browser-harness-js/routines.json`. Scheduled runs require the Browser Harness daemon to be running; overlapping runs are skipped, while routines tied to a deleted chat pause automatically.
+
 The upstream worker-only relay remains available at `skills/cdp/extension` for Chrome tab-group, OOPIF, and `grantPermissions` support without the side panel. Load only one unpacked relay at a time because both connect to `/extension`.
 
 **Fallback:** without an extension, enable remote debugging when Chrome asks:

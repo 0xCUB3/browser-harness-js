@@ -3,7 +3,8 @@
     document.documentElement.dataset.layout = full ? 'full' : 'panel';
     return full;
   };
-  if (new URLSearchParams(location.search).get('layout') === 'full') {
+  const params = new URLSearchParams(location.search);
+  if (params.get('layout') === 'full' || params.get('view') === 'home' || params.get('nav') === 'home') {
     globalThis.__harnessLayout = Promise.resolve(assign(true));
     return;
   }

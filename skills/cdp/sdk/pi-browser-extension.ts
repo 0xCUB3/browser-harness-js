@@ -100,6 +100,36 @@ const tools = [
       return toolResult(await request('/browser/eval', params, signal));
     },
   }),
+  defineTool({
+    name: 'browser_screenshot',
+    label: 'Browser Screenshot',
+    description: `Capture a JPEG of the current tab viewport (or the full page) and return it as an image. Use this to see layout, color, and whether a visual change landed. ${ONLY_TOOLS}`,
+    parameters: Type.Object({
+      fullPage: Type.Optional(Type.Boolean({ description: 'Capture beyond the viewport. Default false.' })),
+    }),
+    async execute(_id: string, params: { fullPage?: boolean }, signal?: AbortSignal) {
+      const result = await request('/browser/screenshot', { fullPage: params.fullPage === true }, signal) as { mimeType: string; data: string; title: string; url: string };
+      return {
+        content: [
+          { type: 'text' as const, text: JSON.stringify({ title: result.title, url: result.url }) },
+          { type: 'image' as const, data: result.data, mimeType: result.mimeType },
+        ],
+        details: { title: result.title, url: result.url },
+      };
+    },
+  }),
+  defineTool({
+    name: 'browser_fill',
+    label: 'Browser Fill',
+    description: `Replace the full value of an input or textarea [n] ref and return a fresh snapshot. Use this for Code-mode editors and settings fields. Do not select-all and type. Do not fill contenteditable this way. ${ONLY_TOOLS}`,
+    parameters: Type.Object({
+      ref: Type.Integer({ description: 'Latest snapshot ref number' }),
+      text: Type.String({ description: 'Complete replacement value' }),
+    }),
+    async execute(_id: string, params: { ref: number; text: string }, signal?: AbortSignal) {
+      return toolResult(await request('/browser/fill', params, signal));
+    },
+  }),
 ];
 
 export default function (pi: ExtensionAPI) {

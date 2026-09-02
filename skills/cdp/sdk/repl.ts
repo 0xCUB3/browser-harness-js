@@ -41,6 +41,7 @@ import { PluckSet } from './pluck.ts';
 import { BrowserApi, createAxActions, handleBrowserRequest } from './browser-api.ts';
 import { seedDefaultSkills } from './default-skills.ts';
 import { createYouTubeApi } from './youtube.ts';
+import { RoutineManager, RoutineTargetUnavailableError, type Routine, type RoutineRunner } from './routines.ts';
 
 export { seedDefaultSkills } from './default-skills.ts';
 
@@ -99,6 +100,7 @@ const PI_SESSION_DIR = resolve(HARNESS_HOME, 'pi-sessions');
 const PI_SESSION_INDEX = resolve(PI_SESSION_DIR, 'browser-harness-sessions.json');
 const HARNESS_SKILLS_DIR = resolve(HARNESS_HOME, 'skills');
 const HARNESS_MEMORY_DIR = resolve(HARNESS_HOME, 'memory');
+const HARNESS_ROUTINES_FILE = resolve(HARNESS_HOME, 'routines.json');
 type PanelSession = { id: string; name: string; mtime: number; archived?: boolean };
 
 ensureHarnessDirs();
@@ -106,7 +108,34 @@ const panelSessions = loadPanelSessions();
 const livePiRpcs = new Map<string, PiRpc>();
 const workingSets = new Map<string, PluckSet>();
 const inFlightPiPrompts = new Map<string, Promise<string>>();
+type AskEvent = { type: string; message?: string; data?: unknown };
+type AskRun = {
+  events: AskEvent[];
+  listeners: Set<(event: AskEvent) => void>;
+  abort: () => Promise<void>;
+  finished: boolean;
+};
+const inFlightAskRuns = new Map<string, AskRun>();
 refreshPanelSessionNames();
+
+function publishAskEvent(run: AskRun, event: AskEvent): void {
+  run.events.push(event);
+  for (const listener of run.listeners) listener(event);
+}
+
+function finishAskRun(id: string, run: AskRun): void {
+  if (run.finished) return;
+  run.finished = true;
+  for (const listener of [...run.listeners]) listener({ type: 'done' });
+  run.listeners.clear();
+  setTimeout(() => {
+    if (inFlightAskRuns.get(id) === run) inFlightAskRuns.delete(id);
+  }, 30_000).unref?.();
+}
+
+function busySessionIds(): string[] {
+  return [...new Set([...inFlightAskRuns.keys(), ...inFlightPiPrompts.keys()])];
+}
 
 function ensureHarnessDirs(): void {
   mkdirSync(PI_SESSION_DIR, { recursive: true });
@@ -179,11 +208,27 @@ function loadAskTranscript(id: string, directory = PI_SESSION_DIR): TranscriptMe
   } catch { return []; }
 }
 
-function appendAskTurn(id: string, prompt: string, answer: string, directory = PI_SESSION_DIR): TranscriptMessage[] {
+function appendAskUser(id: string, prompt: string, directory = PI_SESSION_DIR): TranscriptMessage[] {
   mkdirSync(directory, { recursive: true });
-  const messages = [...loadAskTranscript(id, directory), { role: 'user' as const, text: prompt }, { role: 'assistant' as const, text: answer }];
+  const messages = loadAskTranscript(id, directory);
+  const last = messages.at(-1);
+  if (last?.role === 'user' && last.text === prompt) return messages;
+  messages.push({ role: 'user', text: prompt });
   writeFileSync(askTranscriptPath(id, directory), JSON.stringify({ messages }, null, 2));
   return messages;
+}
+
+function appendAskAssistant(id: string, answer: string, directory = PI_SESSION_DIR): TranscriptMessage[] {
+  mkdirSync(directory, { recursive: true });
+  const messages = loadAskTranscript(id, directory);
+  messages.push({ role: 'assistant', text: answer });
+  writeFileSync(askTranscriptPath(id, directory), JSON.stringify({ messages }, null, 2));
+  return messages;
+}
+
+function appendAskTurn(id: string, prompt: string, answer: string, directory = PI_SESSION_DIR): TranscriptMessage[] {
+  appendAskUser(id, prompt, directory);
+  return appendAskAssistant(id, answer, directory);
 }
 
 function transcriptForSession(id: string, askDirectory = PI_SESSION_DIR): TranscriptMessage[] {
@@ -492,6 +537,9 @@ type ReplServerOptions = {
   piRpcForSession?: (sessionId: string) => AskPiRpc;
   titleRpcFactory?: (sessionId: string) => TitlePiRpc;
   askTranscriptDirectory?: string;
+  routinesFile?: string;
+  routineRunner?: RoutineRunner;
+  startRoutineScheduler?: boolean;
 };
 
 export function createReplServer(options: ReplServerOptions = {}): { server: Server; relay: ExtensionRelay; browserApi: BrowserApi } {
@@ -504,7 +552,36 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
   const relay = new ExtensionRelay();
   const browserApi = new BrowserApi(session, () => relay.extensionConnected, axActions);
   let extensionBridge: Wire | undefined;
-  const server = createServer((req, res) => {
+  let server: Server;
+  const runRoutine: RoutineRunner = options.routineRunner ?? (async (routine: Routine) => {
+    const record = routine.kind === 'cron'
+      ? createPanelSession(`Routine · ${routine.name}`)
+      : routine.sessionId ? panelSessions.get(routine.sessionId) : undefined;
+    if (!record) throw new RoutineTargetUnavailableError();
+    const address = server.address();
+    if (!address || typeof address !== 'object') throw new Error('The harness daemon is not listening.');
+    const response = await fetch(`http://127.0.0.1:${address.port}/ask`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: routine.instructions, harness: 'pi', sessionId: record.id }),
+    });
+    const stream = await response.text();
+    if (!response.ok) throw new Error(stream.trim() || `Routine request failed (${response.status})`);
+    for (const block of stream.split('\n\n')) {
+      const line = block.split('\n').find(value => value.startsWith('data: '));
+      if (!line) continue;
+      try {
+        const event = JSON.parse(line.slice(6)) as { type?: unknown; message?: unknown };
+        if (event.type === 'error') throw new Error(typeof event.message === 'string' ? event.message : 'Routine failed');
+      } catch (error) {
+        if (error instanceof SyntaxError) continue;
+        throw error;
+      }
+    }
+    return { sessionId: record.id };
+  });
+  const routines = new RoutineManager(options.routinesFile ?? HARNESS_ROUTINES_FILE, runRoutine);
+  server = createServer((req, res) => {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
 
     if (handleBrowserRequest(req, res, url, browserApi)) return;
@@ -520,6 +597,8 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
         extension: extensionConnected() || relay.extensionConnected,
         extensionConnected: relay.extensionConnected,
         sessionId: session.getActiveSession() ?? null,
+        busySessionIds: busySessionIds(),
+        busyTargetId: browserApi.currentTarget() ?? null,
       }));
       return;
     }
@@ -541,6 +620,63 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
       res.end();
       return;
     }
+
+    if (req.method === 'GET' && url.pathname === '/harness/routines') {
+      res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
+      res.end(JSON.stringify({ routines: routines.list() }));
+      return;
+    }
+
+    if (req.method === 'POST' && url.pathname === '/harness/routines') {
+      readBody(req).then(raw => {
+        const routine = routines.create(JSON.parse(raw));
+        res.writeHead(201, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify(routine));
+      }).catch(error => {
+        res.writeHead(400, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      });
+      return;
+    }
+
+    const runRoutineMatch = /^\/harness\/routines\/([a-zA-Z0-9_-]+)\/run$/.exec(url.pathname);
+    if (req.method === 'POST' && runRoutineMatch) {
+      try {
+        const routine = routines.trigger(runRoutineMatch[1]!);
+        res.writeHead(202, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify(routine));
+      } catch (error) {
+        res.writeHead(409, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
+    const routineMatch = /^\/harness\/routines\/([a-zA-Z0-9_-]+)$/.exec(url.pathname);
+    if (req.method === 'PATCH' && routineMatch) {
+      readBody(req).then(raw => {
+        const routine = routines.update(routineMatch[1]!, JSON.parse(raw));
+        res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify(routine));
+      }).catch(error => {
+        res.writeHead(400, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      });
+      return;
+    }
+
+    if (req.method === 'DELETE' && routineMatch) {
+      try {
+        const deleted = routines.delete(routineMatch[1]!);
+        res.writeHead(deleted ? 200 : 404, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: deleted }));
+      } catch (error) {
+        res.writeHead(409, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      }
+      return;
+    }
+
 
     if (req.method === 'GET' && url.pathname === '/harness/memory') {
       seedMemoryStore(memoryRoot);
@@ -682,9 +818,54 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
       return;
     }
 
+    const eventsMatch = /^\/sessions\/([a-zA-Z0-9_-]+)\/events$/.exec(url.pathname);
+    if (req.method === 'GET' && eventsMatch) {
+      const run = inFlightAskRuns.get(eventsMatch[1]!);
+      if (!run || run.finished) {
+        res.writeHead(204, askHeaders());
+        res.end();
+        return;
+      }
+      res.writeHead(200, { ...askHeaders(), 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+      const send = (event: AskEvent) => {
+        if (res.destroyed) return;
+        try { res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } catch { /* viewer gone */ }
+      };
+      for (const event of run.events) send(event);
+      if (run.finished) {
+        send({ type: 'done' });
+        res.end();
+        return;
+      }
+      const listener = (event: AskEvent) => {
+        send(event);
+        if (event.type === 'done') {
+          run.listeners.delete(listener);
+          if (!res.destroyed) res.end();
+        }
+      };
+      run.listeners.add(listener);
+      req.once('close', () => { run.listeners.delete(listener); });
+      return;
+    }
+
+    const abortMatch = /^\/sessions\/([a-zA-Z0-9_-]+)\/abort$/.exec(url.pathname);
+    if (req.method === 'POST' && abortMatch) {
+      const id = abortMatch[1]!;
+      const run = inFlightAskRuns.get(id);
+      Promise.resolve(run?.abort()).catch(() => {}).finally(() => {
+        res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      });
+      return;
+    }
+
     if (req.method === 'GET' && url.pathname === '/sessions') {
       refreshPanelSessionNames();
-      const sessions = [...panelSessions.values()].sort((a, b) => b.mtime - a.mtime);
+      const sessions = [...panelSessions.values()].sort((a, b) => b.mtime - a.mtime).map(session => ({
+        ...session,
+        busy: inFlightAskRuns.has(session.id) || inFlightPiPrompts.has(session.id),
+      }));
       res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
       res.end(JSON.stringify({ sessions }));
       return;
@@ -771,7 +952,14 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
       livePiRpcs.get(id)?.dispose();
       livePiRpcs.delete(id);
       inFlightPiPrompts.delete(id);
+      const run = inFlightAskRuns.get(id);
+      if (run) {
+        run.finished = true;
+        run.listeners.clear();
+        inFlightAskRuns.delete(id);
+      }
       deletePanelSession(id);
+      routines.pauseTargetSession(id);
       res.writeHead(200, { ...askHeaders(), 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
       return;
@@ -882,11 +1070,20 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
         if (harness !== 'ask' && harness !== 'pi') throw new Error('Harness must be ask or pi');
         if (body.model !== undefined && !isModelSelection(body.model)) throw new Error('Model needs provider and id');
         res.writeHead(200, { ...askHeaders(), 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache' });
+        const panelSession = ensurePanelSession(body.sessionId);
+        const askRun: AskRun = {
+          events: [],
+          listeners: new Set(),
+          finished: false,
+          abort: async () => {},
+        };
+        inFlightAskRuns.set(panelSession.id, askRun);
         const emit = (event: { type: string; message?: string; data?: unknown }) => {
-          res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+          publishAskEvent(askRun, event);
+          if (res.destroyed) return;
+          try { res.write(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`); } catch { /* viewer gone */ }
         };
         try {
-          const panelSession = ensurePanelSession(body.sessionId);
           let userPrompt = body.prompt.trim() || (images.length ? 'Look at the attached image.' : 'Please review the attached file.');
           if (files.length) {
             const uploadDir = resolve(homedir(), '.browser-harness-js', 'uploads', panelSession.id);
@@ -907,62 +1104,59 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
             });
             userPrompt = `${userPrompt}\n\n${fileSections.join('\n\n')}`;
           }
+          appendAskUser(panelSession.id, userPrompt, askTranscriptDirectory);
           if (harness === 'pi') {
             const sessionRpc = options.piRpcForSession ?? defaultSessionRpc;
             const askPiRpc = sessionRpc(panelSession.id);
-            let askFinished = false;
-            const cancelAsk = () => {
-              if (!askFinished && (req.aborted || res.destroyed)) void askPiRpc.abort().catch(() => {});
+            let aborted = false;
+            askRun.abort = async () => {
+              aborted = true;
+              await askPiRpc.abort().catch(() => {});
             };
-            req.once('close', cancelAsk);
-            res.once('close', cancelAsk);
+            emit({ type: 'status', message: 'Talking to pi' });
+            const previousPrompt = inFlightPiPrompts.get(panelSession.id);
+            if (previousPrompt) await previousPrompt.catch(() => {});
+            browserApi.onTarget(info => emit({ type: 'target', targetId: info.targetId }));
+            if (typeof body.targetId === 'string') {
+              await session.use(body.targetId);
+              browserApi.noteTarget(body.targetId);
+            }
+            const pluck = sessionPluck(panelSession.id);
+            (globalThis as any).pluck = pluck.createApi();
+            if (body.model) await askPiRpc.setModel(body.model);
+            if (typeof body.thinkingLevel === 'string') await askPiRpc.setThinking(body.thinkingLevel);
+            const workingSet = pluck.render() || 'Working set: empty.';
+            const browserTask = await browserApi.beginTask();
+            let prompt: Promise<string> | undefined;
+            let answer = '';
             try {
-              emit({ type: 'status', message: 'Talking to pi' });
-              const previousPrompt = inFlightPiPrompts.get(panelSession.id);
-              if (previousPrompt) await previousPrompt.catch(() => {});
-              if (typeof body.targetId === 'string') {
-                await session.use(body.targetId);
-                browserApi.noteTarget(body.targetId);
-              }
-              const pluck = sessionPluck(panelSession.id);
-              (globalThis as any).pluck = pluck.createApi();
-              if (body.model) await askPiRpc.setModel(body.model);
-              if (typeof body.thinkingLevel === 'string') await askPiRpc.setThinking(body.thinkingLevel);
-              const workingSet = pluck.render() || 'Working set: empty.';
-              const browserTask = await browserApi.beginTask();
-              let prompt: Promise<string> | undefined;
-              let answer = '';
-              try {
-                if (req.aborted || res.destroyed) throw new Error('Ask aborted.');
-                const memoryBriefing = loadL1Briefing(memoryRoot);
-                prompt = memoryBriefing
-                  ? askPiRpc.prompt(`${memoryBriefing}\n\n${workingSet}\n\n## User request\n${userPrompt}`, emit, images)
-                  : askPiRpc.prompt(`${workingSet}\n\n## User request\n${userPrompt}`, emit, images);
-                inFlightPiPrompts.set(panelSession.id, prompt);
-                answer = await prompt;
-                touchPanelSession(panelSession);
-              } finally {
-                if (prompt && inFlightPiPrompts.get(panelSession.id) === prompt) inFlightPiPrompts.delete(panelSession.id);
-                browserApi.endTask(browserTask);
-              }
-              if (answer.trim() && !req.aborted && !res.destroyed) {
-                let messages = transcriptForSession(panelSession.id, askTranscriptDirectory);
-                if (messages.length < 2 || messages.at(-1)?.text !== answer) messages = appendAskTurn(panelSession.id, userPrompt, answer, askTranscriptDirectory);
-                void scheduleMemory({
-                  memoryRoot, sessionId: panelSession.id, messages,
-                  ...(body.model ? { model: body.model } : {}),
-                  ...(options.memoryRunner ? { runner: options.memoryRunner } : {}),
-                }).catch(() => {});
-              }
+              const memoryBriefing = loadL1Briefing(memoryRoot);
+              prompt = memoryBriefing
+                ? askPiRpc.prompt(`${memoryBriefing}\n\n${workingSet}\n\n## User request\n${userPrompt}`, emit, images)
+                : askPiRpc.prompt(`${workingSet}\n\n## User request\n${userPrompt}`, emit, images);
+              inFlightPiPrompts.set(panelSession.id, prompt);
+              answer = await prompt;
+              touchPanelSession(panelSession);
             } finally {
-              askFinished = true;
-              req.off('close', cancelAsk);
-              res.off('close', cancelAsk);
+              if (prompt && inFlightPiPrompts.get(panelSession.id) === prompt) inFlightPiPrompts.delete(panelSession.id);
+              browserApi.onTarget(undefined);
+              browserApi.endTask(browserTask);
+            }
+            if (answer.trim() && !aborted) {
+              let messages = transcriptForSession(panelSession.id, askTranscriptDirectory);
+              if (messages.length < 2 || messages.at(-1)?.text !== answer) messages = appendAskTurn(panelSession.id, userPrompt, answer, askTranscriptDirectory);
+              void scheduleMemory({
+                memoryRoot, sessionId: panelSession.id, messages,
+                ...(body.model ? { model: body.model } : {}),
+                ...(options.memoryRunner ? { runner: options.memoryRunner } : {}),
+              }).catch(() => {});
             }
           } else {
+            let aborted = false;
+            askRun.abort = async () => { aborted = true; };
             const answer = await (options.runAskImpl ?? runAsk)(session, userPrompt, typeof body.targetId === 'string' ? body.targetId : undefined, runSnippet, emit, loadL1Briefing(memoryRoot));
             emit({ type: 'answer', message: answer });
-            if (!req.aborted && !res.destroyed) {
+            if (!aborted) {
               const messages = appendAskTurn(panelSession.id, userPrompt, answer, askTranscriptDirectory);
               void scheduleMemory({
                 memoryRoot, sessionId: panelSession.id, messages,
@@ -974,7 +1168,10 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
         } catch (error) {
           emit({ type: 'error', message: error instanceof Error ? error.message : String(error) });
         }
-        res.end();
+        finishAskRun(panelSession.id, askRun);
+        if (!res.destroyed) {
+          try { res.end(); } catch { /* viewer gone */ }
+        }
       }).catch(error => {
         if (!res.headersSent) res.writeHead(400, { ...askHeaders(), ...TEXT });
         res.end(String(error instanceof Error ? error.message : error) + '\n');
@@ -1052,8 +1249,10 @@ export function createReplServer(options: ReplServerOptions = {}): { server: Ser
       if (extensionBridge === wire) extensionBridge = undefined;
     });
   });
+  if (options.startRoutineScheduler) server.once('listening', () => routines.start());
   const closeServer = server.close.bind(server);
   server.close = ((callback?: (err?: Error) => void) => {
+    routines.close();
     extensionBridge?.close();
     extensionBridge = undefined;
     return closeServer(callback);
@@ -1082,7 +1281,7 @@ function askHeaders(): Record<string, string> {
 }
 
 export function startReplServer(port = DEFAULT_PORT): Server {
-  const { server } = createReplServer({ exitOnQuit: true });
+  const { server } = createReplServer({ exitOnQuit: true, startRoutineScheduler: true });
   server.listen(port, '127.0.0.1', () => {
     const address = server.address();
     const actualPort = typeof address === 'object' && address ? address.port : port;

@@ -2,6 +2,7 @@ const attached = new Set();
 const pendingAttachments = new Map();
 const pendingChatsShortcuts = new Set();
 let daemonConnected = false;
+let askBusy = false;
 let lastError = '';
 let creatingOffscreen;
 
@@ -14,18 +15,18 @@ bootstrap();
 
 async function bootstrap() {
   chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: false }).catch(() => {});
+  chrome.sidePanel?.setOptions({ enabled: true, path: 'sidepanel.html' }).catch(() => {});
   const targets = await chrome.debugger.getTargets().catch(() => []);
   for (const target of targets) {
     if (target.attached && target.tabId != null) attached.add(target.tabId);
   }
-  const hadOffscreen = await chrome.offscreen.hasDocument();
   await ensureOffscreen();
-  const { daemonPort = 9876, offscreenDaemonPort } = await chrome.storage.local.get(['daemonPort', 'offscreenDaemonPort']);
-  if (!hadOffscreen || offscreenDaemonPort !== daemonPort) {
-    await chrome.runtime.sendMessage({ destination: 'offscreen', type: 'reconnect', daemonPort });
-    await chrome.storage.local.set({ offscreenDaemonPort: daemonPort });
-  }
-  await publishState();
+  const { daemonPort = 9876 } = await chrome.storage.local.get('daemonPort');
+  const reply = await chrome.runtime.sendMessage({ destination: 'offscreen', type: 'reconnect', daemonPort }).catch(() => null);
+  await chrome.storage.local.set({ offscreenDaemonPort: daemonPort });
+  daemonConnected = reply?.connected === true;
+  publishState();
+  if (daemonConnected) attachActiveTab();
 }
 
 chrome.action.onClicked.addListener(async tab => {
@@ -68,7 +69,7 @@ chrome.tabs.onRemoved.addListener(tabId => {
   publishState();
 });
 chrome.tabs.onActivated.addListener(({ tabId }) => {
-  if (daemonConnected) attachIfNeeded(tabId);
+  if (daemonConnected) attachActiveUnlessBusy(tabId);
   else publishState();
 });
 
@@ -76,6 +77,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message?.source === 'offscreen') {
     if (message.type === 'connected') {
       daemonConnected = true;
+      publishState();
       attachActiveTab();
     } else if (message.type === 'disconnected') {
       daemonConnected = false;
@@ -94,8 +96,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
   if (message?.type === 'getUiState') {
-    getState().then(state => sendResponse({ state }));
+    syncDaemonConnected().then(() => getState()).then(state => sendResponse({ state }));
     return true;
+  }
+  if (message?.type === 'setAskBusy') {
+    askBusy = message.busy === true;
+    sendResponse({ ok: true });
+    return;
   }
   if (message?.type === 'toggleAttach') {
     toggleAttach(message.tabId).then(() => sendResponse({ ok: true }));
@@ -107,8 +114,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
   if (message?.type === 'setPort') {
     chrome.storage.local.set({ daemonPort: message.daemonPort }).then(async () => {
-      await chrome.runtime.sendMessage({ destination: 'offscreen', type: 'reconnect', daemonPort: message.daemonPort });
+      const reply = await chrome.runtime.sendMessage({
+        destination: 'offscreen',
+        type: 'reconnect',
+        daemonPort: message.daemonPort,
+      }).catch(() => null);
       await chrome.storage.local.set({ offscreenDaemonPort: message.daemonPort });
+      daemonConnected = reply?.connected === true;
+      publishState();
+      if (daemonConnected) attachActiveTab();
       sendResponse({ ok: true });
     });
     return true;
@@ -167,11 +181,11 @@ function isHarnessSurface(url) {
 async function openSidePanel(tab) {
   try {
     if (!chrome.sidePanel?.open) return openChatsTab(tab?.windowId);
-    if (tab?.id != null) {
-      await chrome.sidePanel.open({ tabId: tab.id });
+    if (tab?.windowId != null) {
+      await chrome.sidePanel.open({ windowId: tab.windowId });
       return;
     }
-    if (tab?.windowId != null) await chrome.sidePanel.open({ windowId: tab.windowId });
+    if (tab?.id != null) await chrome.sidePanel.open({ tabId: tab.id });
   } catch {
     return openChatsTab(tab?.windowId);
   }
@@ -239,8 +253,24 @@ async function toggleAttach(tabId) {
 
 async function attachActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tab?.id) await attachIfNeeded(tab.id);
+  if (tab?.id) await attachActiveUnlessBusy(tab.id);
   else await publishState();
+}
+
+async function attachActiveUnlessBusy(tabId) {
+  if (askBusy) {
+    await publishState();
+    return false;
+  }
+  try {
+    const { daemonPort = 9876 } = await chrome.storage.local.get('daemonPort');
+    const health = await fetch(`http://127.0.0.1:${daemonPort}/health`).then(response => response.json());
+    if (Array.isArray(health?.busySessionIds) && health.busySessionIds.length) {
+      await publishState();
+      return false;
+    }
+  } catch { /* daemon may be restarting */ }
+  return attachIfNeeded(tabId);
 }
 
 async function attachIfNeeded(tabId, allowAboutBlank = false) {
@@ -381,6 +411,14 @@ async function handleDaemon(message) {
       respond({});
     }
   } catch (error) { fail(error); }
+}
+
+async function syncDaemonConnected() {
+  const status = await chrome.runtime.sendMessage({ destination: 'offscreen', type: 'status' }).catch(() => null);
+  const connected = status?.connected === true;
+  if (connected === daemonConnected) return;
+  daemonConnected = connected;
+  if (connected) attachActiveTab();
 }
 
 async function getState() {

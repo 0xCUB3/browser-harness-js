@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Browser Harness",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "Raw CDP relay and chats for an already-open Chrome.",
   "permissions": ["debugger", "tabs", "tabGroups", "storage", "offscreen", "scripting", "activeTab", "contextMenus", "sidePanel", "history", "bookmarks", "topSites"],
   "host_permissions": ["<all_urls>"],

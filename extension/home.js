@@ -1,7 +1,7 @@
 import { askModeBtn, chatCardsEl, chatsEmptyEl, homeForm, homeStatusEl, promptEl, queryEl, queryGhostEl, searchAreaEl, searchModeBtn, suggestEl, tabHintEl } from './dom.js';
 import { settings } from './state.js';
 import { showView } from './views.js';
-import { createSession, openSession, sessionId, sessions } from './sessions-ui.js';
+import { createSession, openSession, sessionId, sessions, sessionsLoadError } from './sessions-ui.js';
 import { autosize, sendAsk, updateSend } from './composer.js';
 import { hostOf } from './tabs-ui.js';
 
@@ -626,7 +626,14 @@ function renderHomeChats() {
   if (!chatCardsEl) return;
   chatCardsEl.replaceChildren();
   const validSessions = sessions.filter(session => typeof session?.id === 'string').slice(0, 3);
-  chatsEmptyEl.hidden = validSessions.length > 0;
+  if (validSessions.length) {
+    chatsEmptyEl.hidden = true;
+  } else {
+    chatsEmptyEl.hidden = false;
+    chatsEmptyEl.textContent = sessionsLoadError
+      ? 'Could not load chats. Start browser-harness-js and try again.'
+      : 'No recent chats yet.';
+  }
   validSessions.forEach((session, index) => {
     const card = document.createElement('button');
     card.type = 'button';
@@ -677,10 +684,11 @@ function consumeEarlyInput() {
   const text = typeof early.text === 'string' ? early.text : '';
   early.dispose?.();
   delete globalThis.__earlyInput;
-  if (text && !queryEl.value) {
-    queryEl.value = text;
-    scheduleSuggest();
+  if (text) {
+    if (!queryEl.value) queryEl.value = text;
+    else if (text.length > queryEl.value.length && text.startsWith(queryEl.value)) queryEl.value = text;
   }
+  if (queryEl.value.trim()) scheduleSuggest();
 }
 
 export { homeMode, handleHomeModeClick, setHomeMode, submitHomeQuery, searchUrl, scheduleSuggest, hideSuggest, moveSuggest, acceptInlineCompletion, acceptTabComplete, renderHomeChats, relativeTime, setHomeStatus, sendHomeAsk, consumeEarlyInput, warmSuggestCaches };

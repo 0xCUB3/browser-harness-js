@@ -176,8 +176,31 @@ function containsUnescapedDollar(text) {
   return false;
 }
 
+function findBalancedBrace(text, openIndex) {
+  if (text[openIndex] !== '{') return -1;
+  let depth = 0;
+  for (let index = openIndex; index < text.length; index += 1) {
+    if (isEscaped(text, index)) continue;
+    if (text[index] === '{') depth += 1;
+    else if (text[index] === '}') {
+      depth -= 1;
+      if (depth === 0) return index;
+    }
+  }
+  return -1;
+}
+
+function mhchemCommandEnd(text, index) {
+  for (const command of ['\\ce{', '\\pu{']) {
+    if (!text.startsWith(command, index) || isEscaped(text, index)) continue;
+    const closing = findBalancedBrace(text, index + command.length - 1);
+    if (closing >= 0) return closing + 1;
+  }
+  return -1;
+}
+
 function segmentMathMarkdown(markdown) {
-  if (!markdown.includes('$') && !markdown.includes('\\(') && !markdown.includes('\\[') && !markdown.includes('\\begin{')) {
+  if (!markdown.includes('$') && !markdown.includes('\\(') && !markdown.includes('\\[') && !markdown.includes('\\begin{') && !markdown.includes('\\ce{') && !markdown.includes('\\pu{')) {
     return [{ kind: 'text', text: markdown }];
   }
   const lowerMarkdown = markdown.toLowerCase();
@@ -260,6 +283,11 @@ function segmentMathMarkdown(markdown) {
           else index = closing + 2;
           continue;
         }
+      }
+      const mhchemEnd = mhchemCommandEnd(markdown, index);
+      if (mhchemEnd >= 0) {
+        emit(mhchemEnd, markdown.slice(index, mhchemEnd).trim(), false);
+        continue;
       }
       const environment = BLOCK_MATH_ENVIRONMENT.exec(markdown.slice(index));
       if (environment) {

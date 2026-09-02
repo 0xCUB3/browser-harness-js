@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Browser Harness</title>
+  <script src="early-input.js"></script>
   <link rel="stylesheet" href="vendor/katex/katex.min.css">
   <link rel="stylesheet" href="sidepanel.css">
   <link rel="stylesheet" href="newtab.css">
@@ -18,6 +19,7 @@
       </button>
     </div>
     <nav class="nav-primary" aria-label="Browser Harness">
+      <button type="button" data-nav="routines"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 8v4l2.7 1.7"/><circle cx="12" cy="12" r="8.5"/><path d="M18.5 5.5 21 3"/></svg><span class="nav-label">Routines</span></button>
       <button type="button" data-nav="skills"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3Z"/></svg><span class="nav-label">Skills</span></button>
       <button type="button" data-nav="memory"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 7v13"/><path d="M5 19a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h4a4 4 0 0 1 4 4 4 4 0 0 1 4-4h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-4a2 2 0 0 0-2 2 2 2 0 0 0-2-2z"/></svg><span class="nav-label">Memory</span></button>
       <button type="button" data-nav="settings"><svg class="nav-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg><span class="nav-label">Settings</span></button>
@@ -161,11 +163,76 @@
     <div class="settings-body">
       <div id="settings-slot"></div>
       <div class="section-title">
+        <h2>Automation</h2>
+        <button id="open-routines" type="button">Routines</button>
+      </div>
+      <div class="section-title">
         <h2>Tabs</h2>
         <button id="attach-all" type="button">Attach all</button>
       </div>
       <div id="tabs" class="tabs"></div>
       <p id="runtime-error" class="error" hidden></p>
+    </div>
+  </section>
+
+  <section id="view-routines" class="view full-editor-view" hidden>
+    <header class="settings-header routines-header">
+      <strong>Routines</strong>
+      <span class="header-spacer"></span>
+      <button id="routines-done" class="text-btn" type="button">Done</button>
+      <button id="new-routine" class="primary compact-primary" type="button">New routine</button>
+    </header>
+    <div class="routines-body">
+      <p class="routines-intro">Save repeatable browser work, run it whenever you need it, or let the daemon run it on a schedule.</p>
+      <form id="routine-editor" class="routine-editor" hidden>
+        <div class="routine-editor-heading">
+          <strong id="routine-editor-title">New routine</strong>
+          <button id="cancel-routine" class="text-btn" type="button">Cancel</button>
+        </div>
+        <label class="routine-field"><span>Name</span><input id="routine-name" maxlength="80" required placeholder="Weekly release check"></label>
+        <label class="routine-field"><span>Instructions</span><textarea id="routine-instructions" rows="6" maxlength="50000" required placeholder="Open the release dashboard, check failed jobs, and summarize anything that needs attention."></textarea></label>
+        <div class="routine-grid">
+          <label class="routine-field"><span>Conversation</span>
+            <select id="routine-kind">
+              <option value="cron">Start a fresh chat each run</option>
+              <option value="heartbeat">Continue an existing chat</option>
+            </select>
+          </label>
+          <label id="routine-session-field" class="routine-field" hidden><span>Chat</span><select id="routine-session"></select></label>
+          <label class="routine-field"><span>Schedule</span>
+            <select id="routine-schedule">
+              <option value="manual">Manually</option>
+              <option value="hourly">Every hour</option>
+              <option value="six-hours">Every 6 hours</option>
+              <option value="daily">Daily</option>
+              <option value="weekdays">Weekdays</option>
+              <option value="weekly">Weekly</option>
+              <option value="interval">Custom interval</option>
+            </select>
+          </label>
+          <label id="routine-time-field" class="routine-field" hidden><span>Time</span><input id="routine-time" type="time" value="09:00"></label>
+          <label id="routine-day-field" class="routine-field" hidden><span>Day</span>
+            <select id="routine-day"><option value="1">Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option><option value="0">Sunday</option></select>
+          </label>
+          <label id="routine-interval-field" class="routine-field" hidden><span>Every (minutes)</span><input id="routine-interval" type="number" min="5" max="525600" step="1" value="30"></label>
+        </div>
+        <label class="routine-enabled"><input id="routine-enabled" type="checkbox" checked><span>Active</span><small>Scheduled runs happen while the harness daemon is running.</small></label>
+        <p id="routines-error" class="error" hidden></p>
+        <div class="routine-actions">
+          <button id="delete-routine" class="danger-button" type="button" hidden>Delete</button>
+          <span class="action-spacer"></span>
+          <button id="run-routine" type="button">Run now</button>
+          <button class="primary" type="submit">Save routine</button>
+        </div>
+      </form>
+      <p id="routines-list-error" class="error" hidden></p>
+      <div id="routines-list" class="routines-list"></div>
+      <div id="routines-empty" class="routines-empty" hidden>
+        <div class="routine-empty-icon" aria-hidden="true">↻</div>
+        <strong>No routines yet</strong>
+        <p>Turn work you repeat into a saved routine.</p>
+        <button id="empty-new-routine" class="primary" type="button">Create a routine</button>
+      </div>
     </div>
   </section>
 
@@ -271,6 +338,7 @@
 
   </main>
   <script src="vendor/katex/katex.min.js"></script>
+  <script src="vendor/katex/mhchem.min.js"></script>
   <script type="module" src="sidepanel.js"></script>
 </body>
 </html>
